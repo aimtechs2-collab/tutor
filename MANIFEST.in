@@ -1,0 +1,2 @@
+recursive-include aimtutor_web *
+recursive-include aimtutor_web/.next *
