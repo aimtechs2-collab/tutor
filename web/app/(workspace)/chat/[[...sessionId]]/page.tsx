@@ -534,6 +534,10 @@ export default function ChatPage() {
   const kbMenuRef = useRef<HTMLDivElement>(null);
   const kbBtnRef = useRef<HTMLButtonElement>(null);
   const initialLoadRef = useRef(false);
+  const routeLoadSeqRef = useRef(0);
+  const [sessionRouteLoading, setSessionRouteLoading] = useState(
+    Boolean(sessionIdParam),
+  );
   // Bridge ref: ``ChatComposer`` writes a prefill function into this on
   // mount; ``ChatMessageList`` reads it via ``handlePrefillComposer`` so an
   // ``AskUserOptions`` chip click can drop text into the composer textarea.
@@ -899,17 +903,33 @@ export default function ChatPage() {
 
   /* ---- URL-driven session loading ---- */
   const suppressDraftRedirectRef = useRef(false);
+  const loadSessionForRoute = useCallback(
+    async (sessionId: string) => {
+      const seq = routeLoadSeqRef.current + 1;
+      routeLoadSeqRef.current = seq;
+      setSessionRouteLoading(true);
+      try {
+        await loadSession(sessionId);
+      } finally {
+        if (routeLoadSeqRef.current === seq) {
+          setSessionRouteLoading(false);
+        }
+      }
+    },
+    [loadSession],
+  );
 
   useEffect(() => {
     if (initialLoadRef.current) return;
     initialLoadRef.current = true;
     if (sessionIdParam) {
       suppressDraftRedirectRef.current = false;
-      void loadSession(sessionIdParam).catch(() => {
+      void loadSessionForRoute(sessionIdParam).catch(() => {
         router.replace("/chat", { scroll: false });
       });
     } else {
       suppressDraftRedirectRef.current = true;
+      setSessionRouteLoading(false);
       newSession();
     }
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
@@ -922,14 +942,15 @@ export default function ChatPage() {
     if (sessionIdParam) {
       suppressDraftRedirectRef.current = false;
       if (sessionIdParam === state.sessionId) return;
-      void loadSession(sessionIdParam).catch(() => {
+      void loadSessionForRoute(sessionIdParam).catch(() => {
         router.replace("/chat", { scroll: false });
       });
     } else {
       suppressDraftRedirectRef.current = true;
+      setSessionRouteLoading(false);
       newSession();
     }
-  }, [sessionIdParam, loadSession, newSession, router, state.sessionId]);
+  }, [sessionIdParam, loadSessionForRoute, newSession, router, state.sessionId]);
 
   useEffect(() => {
     if (!sessionIdParam && !state.sessionId) {
@@ -1713,6 +1734,10 @@ export default function ChatPage() {
     downloadChatMarkdown(state.messages, { title });
   }, [state.messages]);
 
+  const showSessionLoading =
+    Boolean(sessionIdParam) &&
+    (sessionRouteLoading || state.sessionId !== sessionIdParam);
+
   return (
     <QuizFollowupProvider>
       <GeogebraTabProvider>
@@ -1818,7 +1843,18 @@ export default function ChatPage() {
             </div>
           </div>
           <div className="mx-auto flex w-full max-w-[960px] flex-1 min-h-0 flex-col overflow-hidden px-6">
-            {!hasMessages ? (
+            {showSessionLoading ? (
+              <div className="flex flex-1 min-h-0 flex-col justify-end pb-14">
+                <div className="mx-auto w-full max-w-[720px] space-y-5 opacity-80">
+                  <div className="h-5 w-2/5 animate-pulse rounded bg-[var(--muted)]" />
+                  <div className="space-y-3">
+                    <div className="h-4 w-full animate-pulse rounded bg-[var(--muted)]/75" />
+                    <div className="h-4 w-11/12 animate-pulse rounded bg-[var(--muted)]/65" />
+                    <div className="h-4 w-4/5 animate-pulse rounded bg-[var(--muted)]/55" />
+                  </div>
+                </div>
+              </div>
+            ) : !hasMessages ? (
               <div className="flex flex-1 min-h-0 flex-col items-center justify-end pb-14 animate-fade-in">
                 <div className="flex flex-col items-center justify-center gap-3 sm:flex-row">
                   <TextLogo className="text-[34px] sm:text-[40px]" />

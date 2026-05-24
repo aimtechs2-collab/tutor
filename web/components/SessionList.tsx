@@ -108,6 +108,17 @@ export default function SessionList({
     return value === "" || value === "New conversation";
   };
   const placeholderLabel = t("New chat");
+  const getDisplayTitle = (session: SessionSummary): string => {
+    if (!isPlaceholderTitle(session.title)) return session.title;
+    const fallback = truncateText(
+      normalizeMessageContent(session.last_message),
+      compact ? 48 : 72,
+    );
+    return fallback || placeholderLabel;
+  };
+  const hasGeneratedTitle = (session: SessionSummary): boolean =>
+    !isPlaceholderTitle(session.title) ||
+    Boolean(normalizeMessageContent(session.last_message).trim());
 
   // The group-key tokens stay stable; only the translated labels change.
   const groupLabels = useMemo<Record<DayGroupKey, string>>(
@@ -239,7 +250,7 @@ export default function SessionList({
                       onClick={(event) => event.stopPropagation()}
                       className="min-w-0 flex-1 rounded border border-[var(--border)] bg-[var(--background)] px-1.5 py-px text-[12px] text-[var(--foreground)] outline-none focus:ring-1 focus:ring-[var(--primary)]/40"
                     />
-                  ) : isPlaceholderTitle(session.title) ? (
+                  ) : !hasGeneratedTitle(session) ? (
                     <span
                       className={`dt-breathing-text min-w-0 flex-1 truncate text-[13px] italic text-[var(--muted-foreground)] ${active ? "font-medium" : ""}`}
                     >
@@ -249,7 +260,7 @@ export default function SessionList({
                     <span
                       className={`min-w-0 flex-1 truncate text-[13px] ${active ? "font-medium" : ""}`}
                     >
-                      {session.title}
+                      {getDisplayTitle(session)}
                     </span>
                   )}
                   <div className="flex shrink-0 items-center gap-px opacity-0 transition-opacity group-hover:opacity-100">
@@ -351,7 +362,7 @@ export default function SessionList({
                         />
                       ) : (
                         <div className="flex items-center">
-                          {isPlaceholderTitle(session.title) ? (
+                          {!hasGeneratedTitle(session) ? (
                             <span
                               className={`dt-breathing-text line-clamp-1 min-w-0 flex-1 text-[12px] italic leading-snug text-[var(--muted-foreground)] ${
                                 active ? "font-medium" : "font-normal"
@@ -365,7 +376,7 @@ export default function SessionList({
                                 active ? "font-medium" : "font-normal"
                               }`}
                             >
-                              {session.title}
+                              {getDisplayTitle(session)}
                             </span>
                           )}
                           <StatusIndicator status={session.status} />

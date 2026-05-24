@@ -141,7 +141,10 @@ export async function listSessions(
         },
       );
       const data = await expectJson<{ sessions: SessionSummary[] }>(response);
-      return data.sessions ?? [];
+      return (data.sessions ?? []).filter(
+        (session) =>
+          session.message_count > 0 || session.status === "running",
+      );
     },
     {
       force: options?.force,
