@@ -143,6 +143,63 @@ def _best_model_score(provider: str, model_name: str) -> int:
     return score
 
 
+def _default_chat_model_score(provider: str, model_name: str) -> int:
+    """Score models for the automatic active chat default.
+
+    The catalog still sorts by capability via ``_best_model_score``. The active
+    runtime default has a different job: it should start responding quickly for
+    ordinary chat, and let the user opt into heavy/pro/reasoning models when a
+    prompt actually needs them.
+    """
+    name = model_name.lower().removeprefix("models/")
+    score = _best_model_score(provider, name)
+
+    preferred_patterns: tuple[tuple[str, int], ...]
+    if provider == "openai":
+        preferred_patterns = (
+            ("gpt-4.1-mini", 7_000),
+            ("gpt-4o-mini", 6_800),
+            ("gpt-5-mini", 6_600),
+            ("gpt-4.1", 6_200),
+            ("gpt-4o", 6_000),
+            ("o4-mini", 5_600),
+        )
+    elif provider == "gemini":
+        preferred_patterns = (
+            ("gemini-2.5-flash", 7_000),
+            ("gemini-2.0-flash", 6_700),
+            ("gemini-flash-latest", 6_500),
+            ("gemini-3.5-flash", 6_300),
+            ("gemini-3-flash", 6_100),
+            ("flash-lite", 5_700),
+        )
+    else:
+        preferred_patterns = (
+            ("flash", 6_200),
+            ("mini", 6_000),
+            ("lite", 5_800),
+            ("chat", 5_500),
+        )
+
+    for pattern, value in preferred_patterns:
+        if pattern in name:
+            score = max(score, value)
+
+    # These models are excellent, but they are poor defaults for interactive
+    # chat because they trade latency/cost for maximum reasoning depth.
+    if "chat-latest" in name:
+        score -= 2_500
+    if re.search(r"(^|[-_./])pro($|[-_./])", name):
+        score -= 1_800
+    if "preview" in name or "experimental" in name or "exp" in name:
+        score -= 1_200
+    if "codex" in name:
+        score -= 1_200
+    if re.search(r"(^|[-_./])(nano|lite)($|[-_./])", name):
+        score -= 300
+    return score
+
+
 def _best_model_index(provider: str, models: list[dict[str, Any]]) -> int:
     if not models:
         return -1
@@ -152,6 +209,17 @@ def _best_model_index(provider: str, models: list[dict[str, Any]]) -> int:
     ]
     best_score, neg_index = max(scored)
     return -neg_index if best_score > 0 else 0
+
+
+def _default_model_index(provider: str, models: list[dict[str, Any]]) -> int:
+    if not models:
+        return -1
+    scored = [
+        (_default_chat_model_score(provider, str(model.get("model") or "")), -idx)
+        for idx, model in enumerate(models)
+    ]
+    best_score, neg_index = max(scored)
+    return -neg_index if best_score > 0 else _best_model_index(provider, models)
 
 
 def _resolved_models_url(profile: dict[str, Any]) -> str:
@@ -260,9 +328,9 @@ async def sync_llm_models(
             if not models:
                 raise ValueError("No chat-capable models were found in the provider response.")
             profile["models"] = models
-            best_idx = _best_model_index(spec.name, models)
-            best_model = models[best_idx]
-            score = _best_model_score(spec.name, str(best_model.get("model") or ""))
+            default_idx = _default_model_index(spec.name, models)
+            best_model = models[default_idx]
+            score = _default_chat_model_score(spec.name, str(best_model.get("model") or ""))
             if best_global is None or score > best_global[0]:
                 best_global = (score, current_profile_id, str(best_model["id"]))
             synced_profiles += 1

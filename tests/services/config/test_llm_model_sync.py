@@ -43,6 +43,7 @@ async def test_sync_filters_non_chat_models_and_selects_best_default(monkeypatch
                 "text-embedding-3-large",
                 "gpt-realtime",
                 "gpt-5.3-chat-latest",
+                "gpt-4.1-mini",
                 "gpt-4o-mini",
             ]
         return [
@@ -62,12 +63,12 @@ async def test_sync_filters_non_chat_models_and_selects_best_default(monkeypatch
     openai_models = [model["model"] for model in profiles[0]["models"]]
     gemini_models = [model["model"] for model in profiles[1]["models"]]
 
-    assert openai_models == ["gpt-5.3-chat-latest", "gpt-4o-mini"]
+    assert openai_models == ["gpt-5.3-chat-latest", "gpt-4.1-mini", "gpt-4o-mini"]
     assert gemini_models == ["gemini-2.5-pro", "gemini-2.5-flash"]
     assert result.synced_profiles == 2
-    assert result.synced_models == 4
+    assert result.synced_models == 5
     assert result.active_profile_id == "openai-profile"
-    assert result.active_model_id == profiles[0]["models"][0]["id"]
+    assert result.active_model_id == profiles[0]["models"][1]["id"]
 
 
 @pytest.mark.asyncio
