@@ -62,6 +62,47 @@ def _quiz_answers():
     ]
 
 
+def test_llm_selection_can_be_saved_and_cleared(store: SQLiteSessionStore) -> None:
+    session = asyncio.run(store.create_session())
+    sid = session["id"]
+
+    with TestClient(_build_app(store)) as client:
+        resp = client.put(
+            f"/api/v1/sessions/{sid}/llm-selection",
+            json={
+                "llm_selection": {
+                    "profile_id": "openai",
+                    "model_id": "openai-gpt-4-1-mini",
+                }
+            },
+        )
+        assert resp.status_code == 200
+        assert resp.json() == {
+            "llm_selection": {
+                "profile_id": "openai",
+                "model_id": "openai-gpt-4-1-mini",
+            }
+        }
+
+        stored = asyncio.run(store.get_session(sid))
+        assert stored is not None
+        assert stored["preferences"]["llm_selection"] == {
+            "profile_id": "openai",
+            "model_id": "openai-gpt-4-1-mini",
+        }
+
+        resp = client.put(
+            f"/api/v1/sessions/{sid}/llm-selection",
+            json={"llm_selection": None},
+        )
+        assert resp.status_code == 200
+        assert resp.json() == {"llm_selection": None}
+
+        stored = asyncio.run(store.get_session(sid))
+        assert stored is not None
+        assert stored["preferences"]["llm_selection"] is None
+
+
 def test_list_entries_empty(store: SQLiteSessionStore) -> None:
     with TestClient(_build_app(store)) as client:
         resp = client.get("/api/v1/question-notebook/entries")

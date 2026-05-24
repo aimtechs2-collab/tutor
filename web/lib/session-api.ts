@@ -179,6 +179,25 @@ export async function deleteSession(sessionId: string): Promise<void> {
   invalidateClientCache("sessions:");
 }
 
+export async function updateSessionLLMSelection(
+  sessionId: string,
+  selection: LLMSelection | null,
+): Promise<LLMSelection | null> {
+  const response = await apiFetch(
+    apiUrl(`/api/v1/sessions/${sessionId}/llm-selection`),
+    {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ llm_selection: selection }),
+    },
+  );
+  const data = await expectJson<{ llm_selection: LLMSelection | null }>(
+    response,
+  );
+  invalidateClientCache("sessions:");
+  return data.llm_selection ?? null;
+}
+
 export async function recordQuizResults(
   sessionId: string,
   answers: QuizResultItem[],

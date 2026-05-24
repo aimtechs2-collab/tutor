@@ -776,6 +776,7 @@ export default memo(function ChatComposer({
                   value={llmSelection}
                   loading={llmOptionsLoading}
                   error={llmOptionsError}
+                  allowSystemDefault
                   onChange={onSelectLLM}
                 />
 

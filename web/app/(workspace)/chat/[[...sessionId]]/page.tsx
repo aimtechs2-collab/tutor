@@ -102,6 +102,7 @@ import {
 } from "@/lib/research-types";
 import { listKnowledgeBases } from "@/lib/knowledge-api";
 import { listLLMOptions, type LLMOption } from "@/lib/llm-options";
+import { updateSessionLLMSelection } from "@/lib/session-api";
 import {
   getEnabledOptionalTools,
   invalidateEnabledOptionalToolsCache,
@@ -1005,10 +1006,18 @@ export default function ChatPage() {
     void refreshLLMOptions();
   }, [refreshLLMOptions]);
 
-  useEffect(() => {
-    if (state.llmSelection || !activeLLMDefault) return;
-    setLLMSelection(activeLLMDefault);
-  }, [activeLLMDefault, setLLMSelection, state.llmSelection]);
+  const handleSelectLLM = useCallback(
+    (selection: LLMSelection | null) => {
+      setLLMSelection(selection);
+      if (!state.sessionId) return;
+      void updateSessionLLMSelection(state.sessionId, selection).catch(
+        (error) => {
+          console.error("Failed to update session LLM selection", error);
+        },
+      );
+    },
+    [setLLMSelection, state.sessionId],
+  );
 
   useEffect(() => {
     if (typeof window === "undefined") return;
@@ -1908,7 +1917,7 @@ export default function ChatPage() {
               onSetSpaceMenuOpen={setSpaceMenuOpen}
               onSetKbMenuOpen={setKbMenuOpen}
               onToggleKB={handleToggleKB}
-              onSelectLLM={setLLMSelection}
+              onSelectLLM={handleSelectLLM}
               onSelectNotebookPicker={handleSelectNotebookPicker}
               onSelectBookPicker={handleSelectBookPicker}
               onSelectHistoryPicker={handleSelectHistoryPicker}

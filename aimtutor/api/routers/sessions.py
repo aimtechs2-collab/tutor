@@ -31,6 +31,15 @@ class BranchSelectionRequest(BaseModel):
     selected_branches: dict[str, int] = Field(default_factory=dict)
 
 
+class LLMSelectionPayload(BaseModel):
+    profile_id: str = Field(..., min_length=1)
+    model_id: str = Field(..., min_length=1)
+
+
+class LLMSelectionRequest(BaseModel):
+    llm_selection: LLMSelectionPayload | None = None
+
+
 class QuizResultItem(BaseModel):
     question_id: str = ""
     question: str = Field(..., min_length=1)
@@ -130,6 +139,28 @@ async def update_branch_selection(session_id: str, payload: BranchSelectionReque
     if not updated:
         raise HTTPException(status_code=404, detail="Session not found")
     return {"selected_branches": payload.selected_branches}
+
+
+@router.put("/{session_id}/llm-selection")
+async def update_llm_selection(session_id: str, payload: LLMSelectionRequest):
+    store = get_sqlite_session_store()
+    session = await store.get_session(session_id)
+    if session is None:
+        raise HTTPException(status_code=404, detail="Session not found")
+    selection = (
+        {
+            "profile_id": payload.llm_selection.profile_id,
+            "model_id": payload.llm_selection.model_id,
+        }
+        if payload.llm_selection
+        else None
+    )
+    updated = await store.update_session_preferences(
+        session_id, {"llm_selection": selection}
+    )
+    if not updated:
+        raise HTTPException(status_code=404, detail="Session not found")
+    return {"llm_selection": selection}
 
 
 @router.delete("/{session_id}/messages/{message_id}")
