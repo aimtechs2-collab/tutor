@@ -123,9 +123,9 @@ ${FENCE}
 
 ### Images
 
-![](/logo-ver2.png)
+![](/logo-text.svg)
 
-> AIMTutor brand mark used inside the co-writer template.
+> AIMTutor text logo used inside the co-writer template.
 
 ### Lists
 

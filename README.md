@@ -1,6 +1,6 @@
 <div align="center">
 
-<p align="center"><img src="assets/logo.png" alt="AIMTutor logo" height="56" style="vertical-align: middle;">&nbsp;<img src="assets/banner.png" alt="AIMTutor" height="48" style="vertical-align: middle;"></p>
+<p align="center"><img src="assets/logo-text.svg" alt="AimTutor.ai" height="64"></p>
 
 # AIMTutor: Agent-Native Personalized Tutoring
 

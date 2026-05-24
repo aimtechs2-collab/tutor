@@ -1,0 +1,8 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="640" height="160" viewBox="0 0 640 160" role="img" aria-labelledby="title desc">
+  <title id="title">AimTutor.ai</title>
+  <desc id="desc">Text based AimTutor.ai logo in blue and navy.</desc>
+  <rect width="640" height="160" fill="none"/>
+  <text x="24" y="104" font-family="Inter, Arial, Helvetica, sans-serif" font-size="86" font-weight="800" letter-spacing="0">
+    <tspan fill="#2563eb">Aim</tspan><tspan fill="#06143f">Tutor</tspan><tspan fill="#2563eb">.ai</tspan>
+  </text>
+</svg>

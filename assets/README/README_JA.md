@@ -1,6 +1,6 @@
 <div align="center">
 
-<img src="../../assets/logo.png" alt="AIMTutor" width="140" style="border-radius: 15px;">
+<img src="../../assets/logo-text.svg" alt="AimTutor.ai" width="220">
 
 # AIMTutor：エージェントネイティブなパーソナライズド個別指導
 
