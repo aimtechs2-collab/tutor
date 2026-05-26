@@ -1,0 +1,125 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model Session {
+  id                 String          @id
+  title              String          @default("New conversation")
+  createdAt          Float           @map("created_at")
+  updatedAt          Float           @map("updated_at")
+  compressedSummary  String?         @default("") @map("compressed_summary")
+  summaryUpToMsgId   Int?            @default(0) @map("summary_up_to_msg_id")
+  preferencesJson    String?         @default("{}") @map("preferences_json")
+  messages           Message[]
+  turns              Turn[]
+  notebookEntries    NotebookEntry[]
+
+  @@index([updatedAt(sort: Desc)], map: "idx_sessions_updated_at")
+  @@map("sessions")
+}
+
+model Message {
+  id              BigInt   @id @default(autoincrement())
+  sessionId       String   @map("session_id")
+  role            String
+  content         String   @default("")
+  capability      String?  @default("")
+  eventsJson      String?  @default("") @map("events_json")
+  attachmentsJson String?  @default("") @map("attachments_json")
+  metadataJson    String?  @default("{}") @map("metadata_json")
+  createdAt       Float    @map("created_at")
+  parentMessageId BigInt?  @map("parent_message_id")
+  session         Session  @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+
+  @@index([sessionId, createdAt, id], map: "idx_messages_session_created")
+  @@index([sessionId, parentMessageId], map: "idx_messages_parent")
+  @@map("messages")
+}
+
+model Turn {
+  id         String      @id
+  sessionId  String      @map("session_id")
+  capability String?     @default("")
+  status     String      @default("running")
+  error      String?     @default("")
+  createdAt  Float       @map("created_at")
+  updatedAt  Float       @map("updated_at")
+  finishedAt Float?      @map("finished_at")
+  session    Session     @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+  events     TurnEvent[]
+
+  @@index([sessionId, updatedAt(sort: Desc)], map: "idx_turns_session_updated")
+  @@index([sessionId, status, updatedAt(sort: Desc)], map: "idx_turns_session_status")
+  @@map("turns")
+}
+
+model TurnEvent {
+  id           BigInt @id @default(autoincrement())
+  turnId       String @map("turn_id")
+  seq          Int
+  type         String
+  source       String? @default("")
+  stage        String? @default("")
+  content      String? @default("")
+  metadataJson String? @default("") @map("metadata_json")
+  timestamp    Float
+  createdAt    Float  @map("created_at")
+  turn         Turn   @relation(fields: [turnId], references: [id], onDelete: Cascade)
+
+  @@unique([turnId, seq])
+  @@index([turnId, seq], map: "idx_turn_events_turn_seq")
+  @@map("turn_events")
+}
+
+model NotebookEntry {
+  id                   BigInt                    @id @default(autoincrement())
+  sessionId            String                    @map("session_id")
+  turnId               String                    @default("") @map("turn_id")
+  questionId           String                    @map("question_id")
+  question             String
+  questionType         String?                   @default("") @map("question_type")
+  optionsJson          String?                   @default("{}") @map("options_json")
+  correctAnswer        String?                   @default("") @map("correct_answer")
+  explanation          String?                   @default("")
+  difficulty           String?                   @default("")
+  userAnswer           String?                   @default("") @map("user_answer")
+  userAnswerImagesJson String?                   @default("[]") @map("user_answer_images_json")
+  isCorrect            Int?                      @default(0) @map("is_correct")
+  bookmarked           Int?                      @default(0)
+  followupSessionId    String?                   @default("") @map("followup_session_id")
+  aiJudgment           String?                   @default("") @map("ai_judgment")
+  createdAt            Float                     @map("created_at")
+  updatedAt            Float                     @map("updated_at")
+  session              Session                   @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+  categories           NotebookEntryCategory[]
+
+  @@unique([sessionId, turnId, questionId])
+  @@index([sessionId, createdAt(sort: Desc)], map: "idx_notebook_entries_session")
+  @@index([bookmarked, createdAt(sort: Desc)], map: "idx_notebook_entries_bookmarked")
+  @@map("notebook_entries")
+}
+
+model NotebookCategory {
+  id        BigInt                   @id @default(autoincrement())
+  name      String                   @unique
+  createdAt Float                    @map("created_at")
+  entries   NotebookEntryCategory[]
+
+  @@map("notebook_categories")
+}
+
+model NotebookEntryCategory {
+  entryId    BigInt           @map("entry_id")
+  categoryId BigInt           @map("category_id")
+  entry      NotebookEntry    @relation(fields: [entryId], references: [id], onDelete: Cascade)
+  category   NotebookCategory @relation(fields: [categoryId], references: [id], onDelete: Cascade)
+
+  @@id([entryId, categoryId])
+  @@map("notebook_entry_categories")
+}
+
