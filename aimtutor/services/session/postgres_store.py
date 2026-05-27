@@ -3,13 +3,15 @@
 from __future__ import annotations
 
 import asyncio
+from contextlib import contextmanager
 import json
 import time
 from typing import Any
 import uuid
 
 import psycopg2
-from psycopg2.extras import RealDictCursor
+from psycopg2.extras import RealDictCursor, execute_values
+from psycopg2.pool import SimpleConnectionPool
 
 from .db_config import get_postgres_database_url
 from .sqlite_store import _PARENT_AUTO, _Unset, TurnRecord
@@ -35,19 +37,40 @@ def _row_to_dict(row: Any) -> dict[str, Any]:
 class PostgresSessionStore:
     """Persist unified chat sessions, messages, turns, and events in Postgres."""
 
+    _TERMINAL_TURN_STATUSES = {"completed", "failed", "cancelled"}
+    _TERMINAL_EVENT_TYPES = {"done", "error"}
+    _TURN_EVENT_FLUSH_BATCH_SIZE = 1000
+
     def __init__(self, database_url: str | None = None) -> None:
         self.database_url = database_url or get_postgres_database_url()
         if not self.database_url:
             raise RuntimeError("Postgres session store requested without a database URL")
         self._lock = asyncio.Lock()
+        self._turn_seq_cache: dict[str, int] = {}
+        self._turn_session_cache: dict[str, str] = {}
+        self._turn_event_buffers: dict[str, list[dict[str, Any]]] = {}
+        self._pool = SimpleConnectionPool(
+            minconn=1,
+            maxconn=5,
+            dsn=self.database_url,
+            cursor_factory=RealDictCursor,
+        )
         self._initialize()
 
     async def _run(self, fn, *args):
         async with self._lock:
             return await asyncio.to_thread(fn, *args)
 
+    @contextmanager
     def _connect(self):
-        return psycopg2.connect(self.database_url, cursor_factory=RealDictCursor)
+        conn = self._pool.getconn()
+        try:
+            yield conn
+        except Exception:
+            conn.rollback()
+            raise
+        finally:
+            self._pool.putconn(conn)
 
     def _initialize(self) -> None:
         with self._connect() as conn, conn.cursor() as cur:
@@ -305,6 +328,8 @@ class PostgresSessionStore:
                 (turn_id, session_id, capability or "", now, now),
             )
             conn.commit()
+        self._turn_seq_cache[turn_id] = 0
+        self._turn_session_cache[turn_id] = session_id
         return {
             "id": turn_id,
             "turn_id": turn_id,
@@ -379,8 +404,10 @@ class PostgresSessionStore:
         return await self._run(self._list_active_turns_sync, session_id)
 
     def _update_turn_status_sync(self, turn_id: str, status: str, error: str = "") -> bool:
+        if status in self._TERMINAL_TURN_STATUSES:
+            self._flush_turn_events_sync(turn_id)
         now = time.time()
-        finished_at = now if status in {"completed", "failed", "cancelled"} else None
+        finished_at = now if status in self._TERMINAL_TURN_STATUSES else None
         with self._connect() as conn, conn.cursor() as cur:
             cur.execute(
                 """
@@ -392,37 +419,99 @@ class PostgresSessionStore:
             )
             updated = cur.rowcount > 0
             conn.commit()
+        if status in self._TERMINAL_TURN_STATUSES:
+            self._turn_seq_cache.pop(turn_id, None)
+            self._turn_session_cache.pop(turn_id, None)
+            self._turn_event_buffers.pop(turn_id, None)
         return updated
 
     async def update_turn_status(self, turn_id: str, status: str, error: str = "") -> bool:
         return await self._run(self._update_turn_status_sync, turn_id, status, error)
 
+    def _resolve_turn_for_event(self, cur, turn_id: str) -> tuple[str, int]:
+        cached_session_id = self._turn_session_cache.get(turn_id)
+        cached_last_seq = self._turn_seq_cache.get(turn_id)
+        if cached_session_id is not None and cached_last_seq is not None:
+            return cached_session_id, cached_last_seq
+
+        cur.execute(
+            """
+            SELECT
+                t.session_id,
+                COALESCE((SELECT MAX(seq) FROM turn_events te WHERE te.turn_id = t.id), 0) AS last_seq
+            FROM turns t
+            WHERE t.id = %s
+            """,
+            (turn_id,),
+        )
+        turn = cur.fetchone()
+        if turn is None:
+            raise ValueError(f"Turn not found: {turn_id}")
+        session_id = turn["session_id"]
+        last_seq = int(turn["last_seq"] or 0)
+        self._turn_session_cache[turn_id] = session_id
+        self._turn_seq_cache[turn_id] = last_seq
+        return session_id, last_seq
+
     def _append_turn_event_sync(self, turn_id: str, event: dict[str, Any]) -> dict[str, Any]:
         now = time.time()
+        cached_session_id = self._turn_session_cache.get(turn_id)
+        cached_last_seq = self._turn_seq_cache.get(turn_id)
+        if cached_session_id is None or cached_last_seq is None:
+            with self._connect() as conn, conn.cursor() as cur:
+                cached_session_id, cached_last_seq = self._resolve_turn_for_event(cur, turn_id)
+
+        payload = dict(event)
+        payload["turn_id"] = payload.get("turn_id") or turn_id
+        payload["session_id"] = payload.get("session_id") or cached_session_id
+
+        provided_seq = int(payload.get("seq") or 0)
+        if provided_seq > 0:
+            seq = provided_seq
+            self._turn_seq_cache[turn_id] = max(int(self._turn_seq_cache.get(turn_id, 0)), seq)
+        else:
+            seq = int(cached_last_seq) + 1
+            self._turn_seq_cache[turn_id] = seq
+        payload["seq"] = seq
+        payload["timestamp"] = float(payload.get("timestamp") or now)
+
+        buffer = self._turn_event_buffers.setdefault(turn_id, [])
+        buffer.append(payload)
+        if (
+            len(buffer) >= self._TURN_EVENT_FLUSH_BATCH_SIZE
+            or str(payload.get("type") or "") in self._TERMINAL_EVENT_TYPES
+        ):
+            self._flush_turn_events_sync(turn_id)
+        return payload
+
+    def _flush_turn_events_sync(self, turn_id: str) -> None:
+        buffer = self._turn_event_buffers.get(turn_id)
+        if not buffer:
+            return
+
+        events = list(buffer)
+        now = time.time()
+        rows = [
+            (
+                turn_id,
+                int(payload["seq"]),
+                payload.get("type", ""),
+                payload.get("source", ""),
+                payload.get("stage", ""),
+                payload.get("content", "") or "",
+                _json_dumps(payload.get("metadata", {})),
+                float(payload.get("timestamp") or now),
+                now,
+            )
+            for payload in events
+        ]
         with self._connect() as conn, conn.cursor() as cur:
-            cur.execute("SELECT id, session_id FROM turns WHERE id = %s", (turn_id,))
-            turn = cur.fetchone()
-            if turn is None:
-                raise ValueError(f"Turn not found: {turn_id}")
-            provided_seq = int(event.get("seq") or 0)
-            if provided_seq > 0:
-                seq = provided_seq
-            else:
-                cur.execute(
-                    "SELECT COALESCE(MAX(seq), 0) AS last_seq FROM turn_events WHERE turn_id = %s",
-                    (turn_id,),
-                )
-                row = cur.fetchone()
-                seq = int(row["last_seq"]) + 1 if row else 1
-            payload = dict(event)
-            payload["seq"] = seq
-            payload["turn_id"] = payload.get("turn_id") or turn_id
-            payload["session_id"] = payload.get("session_id") or turn["session_id"]
-            cur.execute(
+            execute_values(
+                cur,
                 """
                 INSERT INTO turn_events (
                     turn_id, seq, type, source, stage, content, metadata_json, timestamp, created_at
-                ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+                ) VALUES %s
                 ON CONFLICT (turn_id, seq) DO UPDATE SET
                     type = EXCLUDED.type,
                     source = EXCLUDED.source,
@@ -432,24 +521,31 @@ class PostgresSessionStore:
                     timestamp = EXCLUDED.timestamp,
                     created_at = EXCLUDED.created_at
                 """,
-                (
-                    turn_id,
-                    seq,
-                    payload.get("type", ""),
-                    payload.get("source", ""),
-                    payload.get("stage", ""),
-                    payload.get("content", "") or "",
-                    _json_dumps(payload.get("metadata", {})),
-                    float(payload.get("timestamp") or now),
-                    now,
-                ),
+                rows,
             )
             cur.execute("UPDATE turns SET updated_at = %s WHERE id = %s", (now, turn_id))
             conn.commit()
-        return payload
+
+        del buffer[: len(events)]
+        if not buffer:
+            self._turn_event_buffers.pop(turn_id, None)
 
     async def append_turn_event(self, turn_id: str, event: dict[str, Any]) -> dict[str, Any]:
         return await self._run(self._append_turn_event_sync, turn_id, event)
+
+    def _append_turn_events_sync(
+        self,
+        turn_id: str,
+        events: list[dict[str, Any]],
+    ) -> list[dict[str, Any]]:
+        return [self._append_turn_event_sync(turn_id, event) for event in events]
+
+    async def append_turn_events(
+        self,
+        turn_id: str,
+        events: list[dict[str, Any]],
+    ) -> list[dict[str, Any]]:
+        return await self._run(self._append_turn_events_sync, turn_id, events)
 
     def _get_turn_events_sync(self, turn_id: str, after_seq: int = 0) -> list[dict[str, Any]]:
         with self._connect() as conn, conn.cursor() as cur:
@@ -466,7 +562,7 @@ class PostgresSessionStore:
             cur.execute("SELECT session_id FROM turns WHERE id = %s", (turn_id,))
             turn = cur.fetchone()
         session_id = turn["session_id"] if turn else ""
-        return [
+        persisted = [
             {
                 "type": row["type"],
                 "source": row["source"] or "",
@@ -480,6 +576,15 @@ class PostgresSessionStore:
             }
             for row in rows
         ]
+        buffered = [
+            dict(event)
+            for event in self._turn_event_buffers.get(turn_id, [])
+            if int(event.get("seq") or 0) > max(0, int(after_seq))
+        ]
+        by_seq = {int(event.get("seq") or 0): event for event in persisted}
+        for event in buffered:
+            by_seq[int(event.get("seq") or 0)] = event
+        return [by_seq[seq] for seq in sorted(seq for seq in by_seq if seq > 0)]
 
     async def get_turn_events(self, turn_id: str, after_seq: int = 0) -> list[dict[str, Any]]:
         return await self._run(self._get_turn_events_sync, turn_id, after_seq)
@@ -1412,4 +1517,3 @@ def get_postgres_session_store() -> PostgresSessionStore:
     if database_url not in _instances:
         _instances[database_url] = PostgresSessionStore(database_url=database_url)
     return _instances[database_url]
-

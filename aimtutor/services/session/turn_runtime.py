@@ -1799,6 +1799,23 @@ class TurnRuntimeManager:
             execution.events_flushed = True
             events = list(execution.events)
 
+        append_many = getattr(self.store, "append_turn_events", None)
+        if callable(append_many):
+            try:
+                persisted_events = await append_many(execution.turn_id, events)
+            except ValueError as exc:
+                if "Turn not found:" not in str(exc):
+                    raise
+                logger.warning(
+                    "Skip persisting events for missing turn %s (%s events)",
+                    execution.turn_id,
+                    len(events),
+                )
+                return
+            for persisted in persisted_events:
+                self._mirror_event_to_workspace(execution, persisted)
+            return
+
         for payload in events:
             try:
                 persisted = await self.store.append_turn_event(execution.turn_id, payload)
