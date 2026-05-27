@@ -153,6 +153,7 @@ const AssistantMessage = memo(function AssistantMessage({
   ) => void;
 }) {
   const events = useMemo(() => msg.events ?? [], [msg.events]);
+  const hasVisibleAssistantBody = hasVisibleMarkdownContent(msg.content);
   const resultEvent = useMemo(
     () => msg.events?.find((event) => event.type === "result") ?? null,
     [msg.events],
@@ -320,6 +321,7 @@ const AssistantMessage = memo(function AssistantMessage({
       ) : (
         <AssistantResponse content={msg.content} />
       )}
+      {isStreaming && !hasVisibleAssistantBody ? <ResponseWarmup /> : null}
       {/* Non-default branches (quiz, math animator, visualize) keep
           ask_user below the body. The default branch inlines the card
           via ``messageSegments``; the research branch renders its own
@@ -338,6 +340,26 @@ const AssistantMessage = memo(function AssistantMessage({
 });
 
 AssistantMessage.displayName = "AssistantMessage";
+
+const ResponseWarmup = memo(function ResponseWarmup() {
+  const { t } = useTranslation();
+  return (
+    <div
+      role="status"
+      aria-live="polite"
+      className="mt-1 flex items-center gap-2 text-[14px] text-[var(--muted-foreground)]"
+    >
+      <span>{t("Preparing answer")}</span>
+      <span className="flex items-center gap-1" aria-hidden="true">
+        <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-current [animation-delay:0ms]" />
+        <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-current [animation-delay:120ms]" />
+        <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-current [animation-delay:240ms]" />
+      </span>
+    </div>
+  );
+});
+
+ResponseWarmup.displayName = "ResponseWarmup";
 
 /**
  * Inline "Answer now" affordance shown alongside the active assistant turn.

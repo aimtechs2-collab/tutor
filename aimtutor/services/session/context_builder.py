@@ -4,7 +4,9 @@ Build bounded conversation history for unified chat sessions.
 
 from __future__ import annotations
 
+import asyncio
 from dataclasses import dataclass
+import logging
 from typing import Any, Awaitable, Callable
 
 from aimtutor.agents.base_agent import BaseAgent
@@ -14,6 +16,9 @@ from aimtutor.services.llm.config import LLMConfig
 from aimtutor.services.llm.context_window import resolve_effective_context_window
 
 from .protocol import SessionStoreProtocol
+
+
+logger = logging.getLogger(__name__)
 
 
 def count_tokens(text: str) -> int:
@@ -157,6 +162,48 @@ class ContextBuilder:
             total += tokens
         cutoff = len(messages) - len(selected)
         return messages[:cutoff], selected
+
+    async def _summarize_and_store_later(
+        self,
+        *,
+        session_id: str,
+        language: str,
+        stored_summary: str,
+        summary_up_to_msg_id: int,
+        older_unsummarized: list[dict[str, Any]],
+        recent_messages: list[dict[str, Any]],
+        summary_budget: int,
+    ) -> None:
+        await asyncio.sleep(20)
+        merge_parts: list[str] = []
+        if stored_summary:
+            merge_parts.append(f"Existing summary:\n{stored_summary}")
+        older_transcript = format_messages_as_transcript(older_unsummarized)
+        if older_transcript:
+            merge_parts.append(f"Older turns to fold in:\n{older_transcript}")
+        if not merge_parts and recent_messages:
+            merge_parts.append(format_messages_as_transcript(recent_messages))
+
+        source_text = "\n\n".join(part for part in merge_parts if part.strip())
+        if not source_text.strip():
+            return
+
+        try:
+            new_summary, _ = await self._summarize(
+                session_id=session_id,
+                language=language,
+                source_text=source_text,
+                summary_budget=summary_budget,
+                on_event=None,
+            )
+            if not new_summary:
+                return
+            up_to_msg_id = summary_up_to_msg_id
+            if older_unsummarized:
+                up_to_msg_id = int(older_unsummarized[-1]["id"])
+            await self.store.update_summary(session_id, new_summary, up_to_msg_id)
+        except Exception:
+            logger.debug("Background context summarization failed", exc_info=True)
 
     async def _summarize(
         self,
@@ -347,36 +394,17 @@ class ContextBuilder:
         older_unsummarized, recent_messages = self._select_recent_messages(
             unsummarized, recent_budget
         )
-        merge_parts: list[str] = []
-        if stored_summary:
-            merge_parts.append(f"Existing summary:\n{stored_summary}")
-        older_transcript = format_messages_as_transcript(older_unsummarized)
-        if older_transcript:
-            merge_parts.append(f"Older turns to fold in:\n{older_transcript}")
-        if not merge_parts and recent_messages:
-            merge_parts.append(format_messages_as_transcript(recent_messages))
-
-        try:
-            new_summary, events = await self._summarize(
+        asyncio.create_task(
+            self._summarize_and_store_later(
                 session_id=session_id,
                 language=language,
-                source_text="\n\n".join(part for part in merge_parts if part.strip()),
+                stored_summary=stored_summary,
+                summary_up_to_msg_id=summary_up_to_msg_id,
+                older_unsummarized=older_unsummarized,
+                recent_messages=recent_messages,
                 summary_budget=summary_budget,
-                on_event=on_event,
             )
-        except Exception:
-            new_summary = stored_summary
-            events = []
-
-        up_to_msg_id = summary_up_to_msg_id
-        if older_unsummarized:
-            up_to_msg_id = int(older_unsummarized[-1]["id"])
-        elif stored_summary:
-            up_to_msg_id = summary_up_to_msg_id
-
-        if new_summary:
-            await self.store.update_summary(session_id, new_summary, up_to_msg_id)
-            stored_summary = new_summary
+        )
 
         final_history = self._build_history(stored_summary, recent_messages)
         while len(final_history) > 1 and count_tokens(build_history_text(final_history)) > budget:
@@ -390,7 +418,7 @@ class ContextBuilder:
             conversation_history=final_history,
             conversation_summary=stored_summary,
             context_text=final_text,
-            events=events,
+            events=[],
             token_count=count_tokens(final_text),
             budget=budget,
         )

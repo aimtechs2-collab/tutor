@@ -720,6 +720,15 @@ class TurnRuntimeManager:
                 metadata=session_metadata,
             ),
         )
+        await self._publish_live_event(
+            execution,
+            StreamEvent(
+                type=StreamEventType.STAGE_START,
+                source="turn_runtime",
+                stage="responding",
+                metadata={"fast_ack": True},
+            ),
+        )
         async with self._lock:
             self._executions[turn["id"]] = execution
             execution.task = asyncio.create_task(self._run_turn(execution))

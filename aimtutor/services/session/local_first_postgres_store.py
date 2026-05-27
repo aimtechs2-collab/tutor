@@ -31,8 +31,17 @@ class LocalFirstPostgresSessionStore:
         remote: PostgresSessionStore | None = None,
     ) -> None:
         self.local = local or SQLiteSessionStore()
-        self.remote = remote or PostgresSessionStore()
+        self._remote = remote
+        self._remote_lock = asyncio.Lock()
         self._sync_tasks: set[asyncio.Task[Any]] = set()
+
+    async def _get_remote(self) -> PostgresSessionStore:
+        if self._remote is not None:
+            return self._remote
+        async with self._remote_lock:
+            if self._remote is None:
+                self._remote = await asyncio.to_thread(PostgresSessionStore)
+            return self._remote
 
     def _schedule_session_sync(self, session_id: str) -> None:
         try:
@@ -46,11 +55,12 @@ class LocalFirstPostgresSessionStore:
     async def sync_session_to_remote(self, session_id: str) -> bool:
         try:
             snapshot = await self.local.export_session_snapshot(session_id)
+            remote = await self._get_remote()
             if snapshot is None:
                 with contextlib.suppress(Exception):
-                    await self.remote.delete_session(session_id)
+                    await remote.delete_session(session_id)
                 return False
-            import_snapshot = getattr(self.remote, "import_session_snapshot")
+            import_snapshot = getattr(remote, "import_session_snapshot")
             return bool(await import_snapshot(snapshot))
         except Exception:
             logger.exception("Failed to sync local session %s to Postgres", session_id)
@@ -62,7 +72,6 @@ class LocalFirstPostgresSessionStore:
         session_id: str | None = None,
     ) -> dict[str, Any]:
         session = await self.local.create_session(title=title, session_id=session_id)
-        self._schedule_session_sync(session["id"])
         return session
 
     async def get_session(self, session_id: str) -> dict[str, Any] | None:
@@ -121,7 +130,8 @@ class LocalFirstPostgresSessionStore:
         deleted = await self.local.delete_session(session_id)
         if deleted:
             with contextlib.suppress(Exception):
-                await self.remote.delete_session(session_id)
+                remote = await self._get_remote()
+                await remote.delete_session(session_id)
         return deleted
 
     async def add_message(
@@ -181,8 +191,6 @@ class LocalFirstPostgresSessionStore:
         preferences: dict[str, Any],
     ) -> bool:
         updated = await self.local.update_session_preferences(session_id, preferences)
-        if updated:
-            self._schedule_session_sync(session_id)
         return updated
 
     async def get_session_with_messages(self, session_id: str) -> dict[str, Any] | None:

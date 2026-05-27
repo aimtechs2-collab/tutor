@@ -37,7 +37,6 @@ def get_local_first_postgres_session_store() -> LocalFirstPostgresSessionStore:
     if _local_first_postgres_store is None:
         _local_first_postgres_store = LocalFirstPostgresSessionStore(
             local=get_local_sqlite_session_store(),
-            remote=get_postgres_session_store(),
         )
     return _local_first_postgres_store
 
