@@ -177,6 +177,7 @@ type Action =
   | { type: "RESTORE_ASSISTANT"; key: string; message: MessageItem }
   | { type: "STREAM_START"; key: string }
   | { type: "STREAM_EVENT"; key: string; event: StreamEvent }
+  | { type: "STREAM_EVENTS"; key: string; events: StreamEvent[] }
   | {
       type: "STREAM_END";
       key: string;
@@ -414,6 +415,13 @@ function reducer(state: ProviderState, action: Action): ProviderState {
           },
         },
       };
+    }
+    case "STREAM_EVENTS": {
+      return action.events.reduce(
+        (nextState, event) =>
+          reducer(nextState, { type: "STREAM_EVENT", key: action.key, event }),
+        state,
+      );
     }
     case "STREAM_EVENT": {
       // If the session entry has been removed (e.g., BIND_SERVER_SESSION
@@ -888,6 +896,10 @@ export function UnifiedChatProvider({
   >(new Map());
   const draftCounterRef = useRef(0);
   const retryTimersRef = useRef<Set<ReturnType<typeof setTimeout>>>(new Set());
+  const pendingStreamEventsRef = useRef<Map<string, StreamEvent[]>>(new Map());
+  const streamFlushTimersRef = useRef<Map<string, ReturnType<typeof setTimeout>>>(
+    new Map(),
+  );
   // Tracks in-flight regenerate requests so we can restore the popped
   // assistant message if the server rejects the request (e.g. ``regenerate_busy``
   // or ``nothing_to_regenerate``). Keyed by session entry key.
@@ -909,6 +921,9 @@ export function UnifiedChatProvider({
       runnersRef.current.clear();
       retryTimersRef.current.forEach((id) => clearTimeout(id));
       retryTimersRef.current.clear();
+      streamFlushTimersRef.current.forEach((id) => clearTimeout(id));
+      streamFlushTimersRef.current.clear();
+      pendingStreamEventsRef.current.clear();
     },
     [],
   );
@@ -960,6 +975,36 @@ export function UnifiedChatProvider({
     runnersRef.current.set(newKey, runner);
   }, []);
 
+  const flushBufferedStreamEvents = useCallback((key: string) => {
+    const timer = streamFlushTimersRef.current.get(key);
+    if (timer) {
+      clearTimeout(timer);
+      streamFlushTimersRef.current.delete(key);
+    }
+    const events = pendingStreamEventsRef.current.get(key);
+    if (!events?.length) return;
+    pendingStreamEventsRef.current.delete(key);
+    dispatch({ type: "STREAM_EVENTS", key, events });
+  }, []);
+
+  const bufferStreamEvent = useCallback(
+    (key: string, event: StreamEvent) => {
+      const events = pendingStreamEventsRef.current.get(key) ?? [];
+      events.push(event);
+      pendingStreamEventsRef.current.set(key, events);
+      if (streamFlushTimersRef.current.has(key)) return;
+      const timer = setTimeout(() => {
+        streamFlushTimersRef.current.delete(key);
+        const pending = pendingStreamEventsRef.current.get(key);
+        if (!pending?.length) return;
+        pendingStreamEventsRef.current.delete(key);
+        dispatch({ type: "STREAM_EVENTS", key, events: pending });
+      }, 48);
+      streamFlushTimersRef.current.set(key, timer);
+    },
+    [],
+  );
+
   const handleRunnerEvent = useCallback(
     (runnerKey: string, event: StreamEvent) => {
       const runner = runnersRef.current.get(runnerKey);
@@ -1005,6 +1050,7 @@ export function UnifiedChatProvider({
         return;
       }
       if (event.type === "done") {
+        flushBufferedStreamEvents(effectiveKey);
         const status = String(
           (event.metadata as { status?: string } | undefined)?.status ||
             "completed",
@@ -1045,6 +1091,11 @@ export function UnifiedChatProvider({
         }
         return;
       }
+      if (shouldAppendEventContent(event)) {
+        bufferStreamEvent(effectiveKey, event);
+        return;
+      }
+      flushBufferedStreamEvents(effectiveKey);
       dispatch({ type: "STREAM_EVENT", key: effectiveKey, event });
       if (
         event.type === "error" &&
@@ -1085,7 +1136,7 @@ export function UnifiedChatProvider({
         });
       }
     },
-    [moveRunner],
+    [bufferStreamEvent, flushBufferedStreamEvents, moveRunner],
   );
 
   const ensureRunner = useCallback(

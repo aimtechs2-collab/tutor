@@ -1332,6 +1332,12 @@ function detectStreamingMode(
     const meta = (event.metadata ?? {}) as Record<string, unknown>;
     const callKind = String(meta.call_kind ?? "");
 
+    if (
+      meta.fast_ack === true ||
+      (event.type === "stage_start" && event.stage === "responding")
+    ) {
+      return "responding";
+    }
     if (event.type === "tool_call") {
       // Tool calls inherit the active stage so the top-level status stays
       // coherent (e.g., a rag call during explore reads as "Exploring",
