@@ -22,10 +22,24 @@ Usage:
 
 from .base_session_manager import BaseSessionManager
 from .db_config import is_postgres_session_store_enabled
+from .local_first_postgres_store import LocalFirstPostgresSessionStore
 from .postgres_store import PostgresSessionStore, get_postgres_session_store
 from .protocol import SessionStoreProtocol
 from .sqlite_store import SQLiteSessionStore, get_sqlite_session_store as get_local_sqlite_session_store
 from .turn_runtime import TurnRuntimeManager, get_turn_runtime_manager
+
+
+_local_first_postgres_store: LocalFirstPostgresSessionStore | None = None
+
+
+def get_local_first_postgres_session_store() -> LocalFirstPostgresSessionStore:
+    global _local_first_postgres_store
+    if _local_first_postgres_store is None:
+        _local_first_postgres_store = LocalFirstPostgresSessionStore(
+            local=get_local_sqlite_session_store(),
+            remote=get_postgres_session_store(),
+        )
+    return _local_first_postgres_store
 
 
 def get_sqlite_session_store() -> SessionStoreProtocol:
@@ -36,7 +50,7 @@ def get_sqlite_session_store() -> SessionStoreProtocol:
     state across Postgres and SQLite.
     """
     if is_postgres_session_store_enabled():
-        return get_postgres_session_store()
+        return get_local_first_postgres_session_store()
     return get_local_sqlite_session_store()
 
 
@@ -50,7 +64,7 @@ def get_session_store() -> SessionStoreProtocol:
     SQLiteSessionStore (default, zero-config behaviour).
     """
     if is_postgres_session_store_enabled():
-        return get_postgres_session_store()
+        return get_local_first_postgres_session_store()
 
     from aimtutor.services.pocketbase_client import is_pocketbase_enabled
 
@@ -63,11 +77,13 @@ def get_session_store() -> SessionStoreProtocol:
 
 __all__ = [
     "BaseSessionManager",
+    "LocalFirstPostgresSessionStore",
     "PostgresSessionStore",
     "SessionStoreProtocol",
     "SQLiteSessionStore",
     "TurnRuntimeManager",
     "get_local_sqlite_session_store",
+    "get_local_first_postgres_session_store",
     "get_postgres_session_store",
     "get_session_store",
     "get_sqlite_session_store",

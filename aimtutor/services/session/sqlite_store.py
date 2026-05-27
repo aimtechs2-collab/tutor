@@ -1244,6 +1244,45 @@ class SQLiteSessionStore:
 
     # ── Notebook entries ──────────────────────────────────────────────
 
+    def _export_session_snapshot_sync(self, session_id: str) -> dict[str, Any] | None:
+        with self._connect() as conn:
+            session = conn.execute("SELECT * FROM sessions WHERE id = ?", (session_id,)).fetchone()
+            if session is None:
+                return None
+            messages = conn.execute(
+                "SELECT * FROM messages WHERE session_id = ? ORDER BY id ASC",
+                (session_id,),
+            ).fetchall()
+            turns = conn.execute(
+                "SELECT * FROM turns WHERE session_id = ? ORDER BY created_at ASC",
+                (session_id,),
+            ).fetchall()
+            turn_ids = [row["id"] for row in turns]
+            events: list[dict[str, Any]] = []
+            if turn_ids:
+                placeholders = ",".join("?" for _ in turn_ids)
+                events = [
+                    dict(row)
+                    for row in conn.execute(
+                        f"""
+                        SELECT *
+                        FROM turn_events
+                        WHERE turn_id IN ({placeholders})
+                        ORDER BY turn_id ASC, seq ASC
+                        """,
+                        turn_ids,
+                    ).fetchall()
+                ]
+        return {
+            "session": dict(session),
+            "messages": [dict(row) for row in messages],
+            "turns": [dict(row) for row in turns],
+            "turn_events": events,
+        }
+
+    async def export_session_snapshot(self, session_id: str) -> dict[str, Any] | None:
+        return await self._run(self._export_session_snapshot_sync, session_id)
+
     def _upsert_notebook_entries_sync(self, session_id: str, items: list[dict[str, Any]]) -> int:
         if not items:
             return 0

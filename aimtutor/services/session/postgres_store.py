@@ -1113,6 +1113,153 @@ class PostgresSessionStore:
         session["active_turns"] = await self.list_active_turns(session_id)
         return session
 
+    def _import_session_snapshot_sync(self, snapshot: dict[str, Any]) -> bool:
+        session = snapshot.get("session") or {}
+        session_id = str(session.get("id") or "")
+        if not session_id:
+            return False
+        messages = list(snapshot.get("messages") or [])
+        turns = list(snapshot.get("turns") or [])
+        turn_events = list(snapshot.get("turn_events") or [])
+
+        with self._connect() as conn, conn.cursor() as cur:
+            cur.execute(
+                """
+                INSERT INTO sessions (
+                    id, title, created_at, updated_at,
+                    compressed_summary, summary_up_to_msg_id, preferences_json
+                )
+                VALUES (%s, %s, %s, %s, %s, %s, %s)
+                ON CONFLICT (id) DO UPDATE SET
+                    title = EXCLUDED.title,
+                    updated_at = EXCLUDED.updated_at,
+                    compressed_summary = EXCLUDED.compressed_summary,
+                    summary_up_to_msg_id = EXCLUDED.summary_up_to_msg_id,
+                    preferences_json = EXCLUDED.preferences_json
+                """,
+                (
+                    session_id,
+                    session.get("title") or "New conversation",
+                    float(session.get("created_at") or time.time()),
+                    float(session.get("updated_at") or time.time()),
+                    session.get("compressed_summary") or "",
+                    int(session.get("summary_up_to_msg_id") or 0),
+                    session.get("preferences_json") or "{}",
+                ),
+            )
+            if turns:
+                execute_values(
+                    cur,
+                    """
+                    INSERT INTO turns (
+                        id, session_id, capability, status, error,
+                        created_at, updated_at, finished_at
+                    ) VALUES %s
+                    ON CONFLICT (id) DO UPDATE SET
+                        session_id = EXCLUDED.session_id,
+                        capability = EXCLUDED.capability,
+                        status = EXCLUDED.status,
+                        error = EXCLUDED.error,
+                        created_at = EXCLUDED.created_at,
+                        updated_at = EXCLUDED.updated_at,
+                        finished_at = EXCLUDED.finished_at
+                    """,
+                    [
+                        (
+                            turn.get("id"),
+                            turn.get("session_id") or session_id,
+                            turn.get("capability") or "",
+                            turn.get("status") or "running",
+                            turn.get("error") or "",
+                            float(turn.get("created_at") or time.time()),
+                            float(turn.get("updated_at") or time.time()),
+                            turn.get("finished_at"),
+                        )
+                        for turn in turns
+                    ],
+                )
+            if messages:
+                execute_values(
+                    cur,
+                    """
+                    INSERT INTO messages (
+                        id, session_id, role, content, capability, events_json,
+                        attachments_json, metadata_json, created_at, parent_message_id
+                    ) VALUES %s
+                    ON CONFLICT (id) DO UPDATE SET
+                        session_id = EXCLUDED.session_id,
+                        role = EXCLUDED.role,
+                        content = EXCLUDED.content,
+                        capability = EXCLUDED.capability,
+                        events_json = EXCLUDED.events_json,
+                        attachments_json = EXCLUDED.attachments_json,
+                        metadata_json = EXCLUDED.metadata_json,
+                        created_at = EXCLUDED.created_at,
+                        parent_message_id = EXCLUDED.parent_message_id
+                    """,
+                    [
+                        (
+                            int(message.get("id")),
+                            message.get("session_id") or session_id,
+                            message.get("role") or "",
+                            message.get("content") or "",
+                            message.get("capability") or "",
+                            message.get("events_json") or "[]",
+                            message.get("attachments_json") or "[]",
+                            message.get("metadata_json") or "{}",
+                            float(message.get("created_at") or time.time()),
+                            message.get("parent_message_id"),
+                        )
+                        for message in messages
+                    ],
+                )
+                cur.execute(
+                    """
+                    SELECT setval(
+                        pg_get_serial_sequence('messages', 'id'),
+                        GREATEST((SELECT COALESCE(MAX(id), 1) FROM messages), 1),
+                        true
+                    )
+                    """
+                )
+            if turn_events:
+                execute_values(
+                    cur,
+                    """
+                    INSERT INTO turn_events (
+                        turn_id, seq, type, source, stage, content,
+                        metadata_json, timestamp, created_at
+                    ) VALUES %s
+                    ON CONFLICT (turn_id, seq) DO UPDATE SET
+                        type = EXCLUDED.type,
+                        source = EXCLUDED.source,
+                        stage = EXCLUDED.stage,
+                        content = EXCLUDED.content,
+                        metadata_json = EXCLUDED.metadata_json,
+                        timestamp = EXCLUDED.timestamp,
+                        created_at = EXCLUDED.created_at
+                    """,
+                    [
+                        (
+                            event.get("turn_id"),
+                            int(event.get("seq") or 0),
+                            event.get("type") or "",
+                            event.get("source") or "",
+                            event.get("stage") or "",
+                            event.get("content") or "",
+                            event.get("metadata_json") or "{}",
+                            float(event.get("timestamp") or time.time()),
+                            float(event.get("created_at") or time.time()),
+                        )
+                        for event in turn_events
+                    ],
+                )
+            conn.commit()
+        return True
+
+    async def import_session_snapshot(self, snapshot: dict[str, Any]) -> bool:
+        return await self._run(self._import_session_snapshot_sync, snapshot)
+
     def _upsert_notebook_entries_sync(self, session_id: str, items: list[dict[str, Any]]) -> int:
         if not items:
             return 0
