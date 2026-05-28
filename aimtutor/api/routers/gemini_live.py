@@ -3,16 +3,19 @@ Gemini Live Voice Tutoring Router
 ==================================
 
 Endpoints:
-  GET  /config                — feature flag + model/voice list
-  POST /token                 — exchange API key for short-lived ephemeral token
-  WS   /session               — bidirectional audio bridge (browser ↔ Gemini Live)
+  GET  /api/v1/gemini-live/config   — feature flag + model/voice list
+  POST /api/v1/gemini-live/token    — generate a server-side session token
+  WS   /api/v1/gemini-live/session  — bidirectional audio bridge
 
-The browser NEVER talks to Google directly. All Gemini Live traffic goes
-through the /session WebSocket proxy so the API key stays server-side.
+How auth works:
+  1. Browser calls POST /token → gets a short-lived UUID token
+  2. Browser opens WS /session?token=<uuid>
+  3. Server validates token, then opens its own WS to Gemini Live
+     with the real API key embedded server-side (never sent to browser)
 
 Audio spec:
-  Browser → server : 16-bit PCM, 16 kHz, mono  (base64 JSON frames)
-  Server  → browser: 16-bit PCM, 24 kHz, mono  (base64 JSON frames)
+  Browser → server : 16-bit PCM, 16 kHz, mono  (base64-encoded JSON)
+  Server  → browser: 16-bit PCM, 24 kHz, mono  (base64-encoded JSON)
 """
 
 from __future__ import annotations
@@ -23,6 +26,7 @@ import json
 import logging
 import os
 import time
+import uuid
 from contextlib import suppress
 from typing import Any
 
@@ -30,7 +34,7 @@ import httpx
 from fastapi import APIRouter, Depends, HTTPException, Query, WebSocket, WebSocketDisconnect
 from pydantic import BaseModel
 
-from aimtutor.api.routers.auth import require_auth, ws_auth_failed, ws_require_auth
+from aimtutor.api.routers.auth import require_auth
 from aimtutor.services.session import get_session_store
 
 logger = logging.getLogger(__name__)
@@ -40,23 +44,38 @@ router = APIRouter()
 # ── constants ─────────────────────────────────────────────────────────────
 
 LIVE_MODELS = [
-    {"id": "gemini-2.0-flash-live", "display_name": "Gemini 2.0 Flash Live", "affective_dialog": False},
-    {"id": "gemini-2.5-flash-live-preview", "display_name": "Gemini 2.5 Flash Live (Preview)", "affective_dialog": True},
+    {
+        "id": "gemini-2.0-flash-live-001",
+        "display_name": "Gemini 2.0 Flash Live",
+        "affective_dialog": False,
+    },
+    {
+        "id": "gemini-2.5-flash-preview-native-audio-dialog",
+        "display_name": "Gemini 2.5 Flash Live (Preview)",
+        "affective_dialog": True,
+    },
 ]
 LIVE_VOICES = ["Aoede", "Puck", "Charon", "Kore", "Fenrir"]
 
+GEMINI_LIVE_WSS = (
+    "wss://generativelanguage.googleapis.com/ws/"
+    "google.ai.generativelanguage.v1beta."
+    "GenerativeService.BidiGenerateContent"
+)
+
+TOKEN_TTL_SECONDS = 300
 IDLE_TIMEOUT_SECONDS = 120
 MAX_SESSION_SECONDS = 600
 MAX_CONCURRENT_PER_USER = 3
 
 # ── in-memory state ───────────────────────────────────────────────────────
 
-# { sha256(token): {"user_id": str, "ts": float} }
+# { token_uuid: {"user_id": str, "ts": float, "model": str, "voice": str, ...} }
 _token_registry: dict[str, dict[str, Any]] = {}
 # { user_id: active_session_count }
 _active_sessions: dict[str, int] = {}
-
-TOKEN_TTL = 300  # seconds
+# simple per-key call tracker for rate limiting
+_rate_buckets: dict[str, list[float]] = {}
 
 
 def _get_api_key() -> str | None:
@@ -65,20 +84,14 @@ def _get_api_key() -> str | None:
 
 def _clean_expired_tokens() -> None:
     now = time.time()
-    expired = [k for k, v in _token_registry.items() if now - v["ts"] > TOKEN_TTL]
+    expired = [k for k, v in _token_registry.items() if now - v["ts"] > TOKEN_TTL_SECONDS]
     for k in expired:
         del _token_registry[k]
 
 
-# ── rate limiter ──────────────────────────────────────────────────────────
-
-_rate_buckets: dict[str, list[float]] = {}
-
-
-def _rate_check(key: str, max_calls: int = 10, window: float = 60.0) -> bool:
+def _rate_ok(key: str, max_calls: int = 10, window: float = 60.0) -> bool:
     now = time.monotonic()
-    bucket = _rate_buckets.get(key, [])
-    bucket = [t for t in bucket if now - t < window]
+    bucket = [t for t in _rate_buckets.get(key, []) if now - t < window]
     if len(bucket) >= max_calls:
         _rate_buckets[key] = bucket
         return False
@@ -90,7 +103,7 @@ def _rate_check(key: str, max_calls: int = 10, window: float = 60.0) -> bool:
 # ── models ────────────────────────────────────────────────────────────────
 
 class TokenRequest(BaseModel):
-    model: str = "gemini-2.0-flash-live"
+    model: str = "gemini-2.0-flash-live-001"
     voice: str = "Aoede"
     enable_affective_dialog: bool = False
 
@@ -99,10 +112,9 @@ class TokenRequest(BaseModel):
 
 @router.get("/config")
 async def get_config() -> dict[str, Any]:
-    """Feature-flag endpoint. Safe to call without auth."""
-    api_key = _get_api_key()
+    """Public feature-flag endpoint — safe to call without auth."""
     return {
-        "enabled": bool(api_key),
+        "enabled": bool(_get_api_key()),
         "requires_https": True,
         "models": LIVE_MODELS,
         "voices": LIVE_VOICES,
@@ -112,58 +124,35 @@ async def get_config() -> dict[str, Any]:
 @router.post("/token")
 async def create_token(
     body: TokenRequest,
-    payload=Depends(require_auth),
+    payload: Any = Depends(require_auth),
 ) -> dict[str, Any]:
     """
-    Exchange the server-side Gemini API key for a short-lived ephemeral token.
-    The browser sends this token when opening /session — the API key never
-    leaves the server.
+    Issue a short-lived server-side session token.
+    The Gemini API key never leaves the server — the browser only
+    receives this opaque UUID token, which it passes to /session.
     """
     api_key = _get_api_key()
     if not api_key:
-        raise HTTPException(503, "Gemini Live is not configured. Set GEMINI_API_KEY.")
+        raise HTTPException(503, "GEMINI_API_KEY is not configured on the server.")
 
-    # Rate limit
-    user_id = getattr(payload, "user_id", None) or "anonymous"
-    if not _rate_check(user_id):
-        raise HTTPException(429, "Too many token requests. Please wait a moment.")
+    valid_model_ids = {m["id"] for m in LIVE_MODELS}
+    if body.model not in valid_model_ids:
+        # Fall back to default rather than hard-reject
+        body.model = "gemini-2.0-flash-live-001"
 
-    if body.model not in {m["id"] for m in LIVE_MODELS}:
-        raise HTTPException(400, f"Unsupported model: {body.model}")
-
-    # Request ephemeral token from Google
-    try:
-        async with httpx.AsyncClient(timeout=15) as client:
-            resp = await client.post(
-                "https://generativelanguage.googleapis.com/v1beta/models/"
-                f"{body.model}:generateContent",
-                headers={
-                    "x-goog-api-key": api_key,
-                    "Content-Type": "application/json",
-                },
-                json={
-                    "ephemeral_token_request": {
-                        "expire_time": "300s",
-                        "new_session_expire_time": "3600s",
-                    }
-                },
-            )
-        if resp.status_code != 200:
-            logger.error("Gemini ephemeral token request failed: %s %s", resp.status_code, resp.text[:200])
-            raise HTTPException(502, "Failed to get ephemeral token from Gemini API.")
-        data = resp.json()
-        token = data.get("ephemeral_token") or data.get("token")
-        if not token:
-            raise HTTPException(502, "Gemini API returned no token.")
-    except httpx.RequestError as exc:
-        logger.error("Gemini token request network error: %s", exc)
-        raise HTTPException(502, "Network error reaching Gemini API.")
-
-    expires_at = time.time() + TOKEN_TTL
-    token_hash = hashlib.sha256(token.encode()).hexdigest()
+    user_id: str = str(getattr(payload, "user_id", None) or "anonymous")
+    if not _rate_ok(user_id):
+        raise HTTPException(429, "Too many requests. Please wait a moment.")
 
     _clean_expired_tokens()
-    _token_registry[token_hash] = {
+
+    token = str(uuid.uuid4())
+    import datetime
+    expires_at = datetime.datetime.fromtimestamp(
+        time.time() + TOKEN_TTL_SECONDS, tz=datetime.timezone.utc
+    ).isoformat()
+
+    _token_registry[token] = {
         "user_id": user_id,
         "ts": time.time(),
         "model": body.model,
@@ -171,14 +160,7 @@ async def create_token(
         "affective": body.enable_affective_dialog,
     }
 
-    import datetime
-    return {
-        "token": token,
-        "expires_at": datetime.datetime.fromtimestamp(
-            expires_at, tz=datetime.timezone.utc
-        ).isoformat(),
-        "model": body.model,
-    }
+    return {"token": token, "expires_at": expires_at, "model": body.model}
 
 
 @router.websocket("/session")
@@ -190,15 +172,10 @@ async def voice_session(
     enable_video: bool = Query(default=False),
     proactive_prompt: str | None = Query(default=None),
 ) -> None:
-    """
-    WebSocket proxy: browser ↔ AIMTutor ↔ Gemini Live.
-
-    Auth: validated via one-time ephemeral token (no Bearer header needed).
-    """
+    """Bidirectional audio proxy: browser ↔ AIMTutor server ↔ Gemini Live."""
     # Validate token
-    token_hash = hashlib.sha256(token.encode()).hexdigest()
     _clean_expired_tokens()
-    token_info = _token_registry.get(token_hash)
+    token_info = _token_registry.get(token)
     if not token_info:
         await ws.close(code=4001, reason="Invalid or expired token")
         return
@@ -207,95 +184,56 @@ async def voice_session(
     model: str = token_info["model"]
     voice: str = token_info["voice"]
     affective: bool = token_info["affective"]
-
-    # Consume token (single-use)
-    del _token_registry[token_hash]
+    # Single-use
+    del _token_registry[token]
 
     # Concurrent session limit
-    current = _active_sessions.get(user_id, 0)
-    if current >= MAX_CONCURRENT_PER_USER:
+    if _active_sessions.get(user_id, 0) >= MAX_CONCURRENT_PER_USER:
         await ws.close(code=4029, reason="Max concurrent sessions reached")
         return
 
     await ws.accept()
-    _active_sessions[user_id] = current + 1
-    logger.info("gemini_live.session_start user=%s model=%s kb=%s", user_id, model, kb)
+    _active_sessions[user_id] = _active_sessions.get(user_id, 0) + 1
+    logger.info("gemini_live session_start user=%s model=%s kb=%s", user_id, model, kb)
 
-    # Collect transcript for memory
     transcript_turns: list[dict[str, str]] = []
     session_start = time.monotonic()
-    last_activity = time.monotonic()
-    model_audio_seconds = 0.0
-    user_audio_seconds = 0.0
 
     try:
-        # Build system instruction from session context
-        system_instruction = await _build_system_instruction(session_id, user_id)
-
-        # Tool declarations
-        tools = _build_tool_declarations(kb_name=kb)
-
-        # Session config for Gemini Live
-        live_config: dict[str, Any] = {
-            "response_modalities": ["AUDIO", "TEXT"],
-            "system_instruction": {"parts": [{"text": system_instruction}]},
-            "speech_config": {
-                "voice_config": {
-                    "prebuilt_voice_config": {"voice_name": voice}
-                }
-            },
-        }
-        if tools:
-            live_config["tools"] = tools
-        if affective and model == "gemini-2.5-flash-live-preview":
-            live_config["enable_affective_dialog"] = True
-
-        api_key = _get_api_key()
-        if not api_key:
-            await ws.send_json({"type": "error", "message": "Server not configured"})
-            return
-
-        # Launch session with timeout guard
-        try:
-            await asyncio.wait_for(
-                _run_session(
-                    ws=ws,
-                    api_key=api_key,
-                    model=model,
-                    live_config=live_config,
-                    kb_name=kb,
-                    session_id=session_id,
-                    user_id=user_id,
-                    proactive_prompt=proactive_prompt,
-                    transcript_turns=transcript_turns,
-                    last_activity_ref=[last_activity],
-                    model_audio_secs_ref=[model_audio_seconds],
-                    user_audio_secs_ref=[user_audio_seconds],
-                    enable_video=enable_video,
-                ),
-                timeout=MAX_SESSION_SECONDS,
-            )
-        except asyncio.TimeoutError:
-            with suppress(Exception):
-                await ws.send_json({
-                    "type": "info",
-                    "message": "Maximum session duration (10 min) reached. Please start a new session."
-                })
-
+        await asyncio.wait_for(
+            _proxy_session(
+                ws=ws,
+                model=model,
+                voice=voice,
+                affective=affective,
+                kb_name=kb,
+                session_id=session_id,
+                user_id=user_id,
+                proactive_prompt=proactive_prompt,
+                transcript_turns=transcript_turns,
+                enable_video=enable_video,
+            ),
+            timeout=MAX_SESSION_SECONDS,
+        )
+    except asyncio.TimeoutError:
+        with suppress(Exception):
+            await ws.send_json({
+                "type": "info",
+                "message": "Session reached the 10-minute limit. Start a new session to continue.",
+            })
     except WebSocketDisconnect:
         pass
     except Exception as exc:
-        logger.exception("gemini_live.session_error user=%s: %s", user_id, exc)
+        logger.exception("gemini_live session_error user=%s: %s", user_id, exc)
         with suppress(Exception):
             await ws.send_json({"type": "error", "message": str(exc)})
     finally:
         _active_sessions[user_id] = max(0, _active_sessions.get(user_id, 1) - 1)
         duration = time.monotonic() - session_start
         logger.info(
-            "gemini_live.session_end user=%s duration=%.1fs turns=%d",
+            "gemini_live session_end user=%s duration=%.1fs turns=%d",
             user_id, duration, len(transcript_turns),
         )
-        # Write to L1 memory trace
         if transcript_turns:
             with suppress(Exception):
                 await _flush_to_memory(
@@ -306,59 +244,70 @@ async def voice_session(
                 )
 
 
-# ── session runner ────────────────────────────────────────────────────────
+# ── proxy session ─────────────────────────────────────────────────────────
 
-async def _run_session(
+async def _proxy_session(
     *,
     ws: WebSocket,
-    api_key: str,
     model: str,
-    live_config: dict[str, Any],
+    voice: str,
+    affective: bool,
     kb_name: str | None,
     session_id: str | None,
     user_id: str,
     proactive_prompt: str | None,
     transcript_turns: list[dict[str, str]],
-    last_activity_ref: list[float],
-    model_audio_secs_ref: list[float],
-    user_audio_secs_ref: list[float],
     enable_video: bool,
 ) -> None:
-    """Core bidirectional bridge loop."""
-    import base64
-
-    wss_url = (
-        f"wss://generativelanguage.googleapis.com/ws/google.ai.generativelanguage.v1beta."
-        f"GenerativeService.BidiGenerateContent?key={api_key}"
-    )
-
-    async with httpx.AsyncClient() as client:
-        async with client.stream("GET", wss_url, headers={}) as _:
-            pass  # Placeholder — see below for real implementation
-
-    # Use websockets library for the upstream connection
     try:
-        import websockets  # type: ignore
+        import websockets as _ws  # type: ignore
     except ImportError:
-        await ws.send_json({"type": "error", "message": "websockets package required"})
+        await ws.send_json({
+            "type": "error",
+            "message": "Server missing 'websockets' package. Run: pip install websockets",
+        })
         return
 
-    setup_msg = json.dumps({
+    api_key = _get_api_key()
+    gemini_url = f"{GEMINI_LIVE_WSS}?key={api_key}"
+
+    system_instruction = await _build_system_instruction(session_id)
+    tools = _build_tool_declarations(kb_name)
+
+    setup_payload: dict[str, Any] = {
         "setup": {
             "model": f"models/{model}",
-            "generation_config": live_config,
+            "generation_config": {
+                "response_modalities": ["AUDIO", "TEXT"],
+                "speech_config": {
+                    "voice_config": {
+                        "prebuilt_voice_config": {"voice_name": voice}
+                    }
+                },
+            },
+            "system_instruction": {"parts": [{"text": system_instruction}]},
         }
-    })
+    }
+    if tools:
+        setup_payload["setup"]["tools"] = tools
+    if affective and "2.5" in model:
+        setup_payload["setup"]["generation_config"]["enable_affective_dialog"] = True
 
-    async with websockets.connect(wss_url) as gemini_ws:
+    last_activity: list[float] = [time.monotonic()]
+
+    async with _ws.connect(gemini_url) as gemini_ws:
         # Send setup
-        await gemini_ws.send(setup_msg)
+        await gemini_ws.send(json.dumps(setup_payload))
 
-        # Wait for setup_complete
-        raw = await gemini_ws.recv()
-        setup_resp = json.loads(raw)
-        if "setupComplete" not in str(setup_resp):
-            logger.warning("Unexpected setup response: %s", str(setup_resp)[:200])
+        # Wait for setupComplete
+        try:
+            raw = await asyncio.wait_for(gemini_ws.recv(), timeout=10)
+            resp = json.loads(raw)
+            if "setupComplete" not in json.dumps(resp):
+                logger.warning("gemini_live: unexpected setup response: %s", str(resp)[:200])
+        except asyncio.TimeoutError:
+            await ws.send_json({"type": "error", "message": "Gemini Live setup timed out."})
+            return
 
         # Proactive greeting
         if proactive_prompt:
@@ -373,30 +322,35 @@ async def _run_session(
         async def watchdog() -> None:
             while True:
                 await asyncio.sleep(30)
-                if time.monotonic() - last_activity_ref[0] > IDLE_TIMEOUT_SECONDS:
+                if time.monotonic() - last_activity[0] > IDLE_TIMEOUT_SECONDS:
                     with suppress(Exception):
                         await ws.send_json({"type": "info", "message": "Session ended due to inactivity."})
                     await ws.close(code=1000)
                     return
 
-        wdog = asyncio.create_task(watchdog())
+        # Keepalive ping to browser
+        async def ping_browser() -> None:
+            while True:
+                await asyncio.sleep(25)
+                with suppress(Exception):
+                    await ws.send_json({"type": "ping"})
 
-        # Browser → Gemini forwarder
+        # Browser → Gemini
         async def browser_to_gemini() -> None:
             async for raw_msg in ws.iter_text():
-                last_activity_ref[0] = time.monotonic()
+                last_activity[0] = time.monotonic()
                 try:
                     msg = json.loads(raw_msg)
                 except json.JSONDecodeError:
                     continue
-                t = msg.get("type")
+                t = msg.get("type", "")
                 if t == "audio_chunk":
-                    pcm_b64: str = msg["data"]
-                    chunk_bytes = len(base64.b64decode(pcm_b64))
-                    user_audio_secs_ref[0] += chunk_bytes / 2 / 16000
                     await gemini_ws.send(json.dumps({
                         "realtime_input": {
-                            "media_chunks": [{"mime_type": "audio/pcm", "data": pcm_b64}]
+                            "media_chunks": [{
+                                "mime_type": "audio/pcm;rate=16000",
+                                "data": msg["data"],
+                            }]
                         }
                     }))
                 elif t == "text":
@@ -407,208 +361,175 @@ async def _run_session(
                         }
                     }))
                 elif t == "interrupt":
-                    # Signal Gemini to stop generating
-                    await gemini_ws.send(json.dumps({"client_content": {"turn_complete": False}}))
+                    with suppress(Exception):
+                        await gemini_ws.send(json.dumps({
+                            "client_content": {"turn_complete": False}
+                        }))
                 elif t == "end_turn":
                     return
                 elif t == "video_frame" and enable_video:
                     await gemini_ws.send(json.dumps({
                         "realtime_input": {
-                            "media_chunks": [{"mime_type": "image/jpeg", "data": msg["data"]}]
+                            "media_chunks": [{
+                                "mime_type": "image/jpeg",
+                                "data": msg["data"],
+                            }]
                         }
                     }))
-                elif t == "pong":
-                    pass
+                # pong: no-op
 
-        # Gemini → browser forwarder
+        # Gemini → browser
         async def gemini_to_browser() -> None:
             async for raw_resp in gemini_ws:
-                resp = json.loads(raw_resp)
+                try:
+                    resp = json.loads(raw_resp)
+                except Exception:
+                    continue
 
-                # Audio output
-                parts = (
-                    resp.get("serverContent", {})
-                    .get("modelTurn", {})
-                    .get("parts", [])
-                )
-                for part in parts:
-                    if "inlineData" in part:
-                        audio_b64: str = part["inlineData"]["data"]
-                        chunk_bytes = len(base64.b64decode(audio_b64))
-                        model_audio_secs_ref[0] += chunk_bytes / 2 / 24000
-                        await ws.send_json({"type": "audio_chunk", "data": audio_b64})
-                    elif "text" in part:
-                        text_content = part["text"]
-                        transcript_turns.append({"role": "model", "text": text_content})
-                        await ws.send_json({"type": "transcript", "role": "model", "text": text_content})
+                server_content = resp.get("serverContent", {})
+                model_turn = server_content.get("modelTurn", {})
 
-                # Turn complete
-                if resp.get("serverContent", {}).get("turnComplete"):
+                for part in model_turn.get("parts", []):
+                    inline = part.get("inlineData", {})
+                    if inline.get("data"):
+                        await ws.send_json({"type": "audio_chunk", "data": inline["data"]})
+                    elif part.get("text"):
+                        text = part["text"]
+                        transcript_turns.append({"role": "model", "text": text})
+                        await ws.send_json({"type": "transcript", "role": "model", "text": text})
+
+                if server_content.get("turnComplete"):
                     await ws.send_json({"type": "turn_complete"})
 
+                input_trans = server_content.get("inputTranscription", {}).get("text", "")
+                if input_trans:
+                    transcript_turns.append({"role": "user", "text": input_trans})
+                    await ws.send_json({"type": "transcript", "role": "user", "text": input_trans})
+
                 # Tool calls
-                tool_calls = resp.get("toolCall", {}).get("functionCalls", [])
-                if tool_calls:
-                    tool_responses = []
-                    for call in tool_calls:
-                        fn_name = call.get("name", "")
-                        fn_args = dict(call.get("args", {}))
-                        call_id = call.get("id", "")
-                        await ws.send_json({"type": "tool_start", "tool": fn_name})
-                        result = await _dispatch_tool(fn_name, fn_args, kb_name)
-                        await ws.send_json({"type": "tool_done", "tool": fn_name})
-                        tool_responses.append({
-                            "id": call_id,
-                            "name": fn_name,
-                            "response": {"output": result},
-                        })
+                for fn_call in resp.get("toolCall", {}).get("functionCalls", []):
+                    fn_name = fn_call.get("name", "")
+                    fn_args = dict(fn_call.get("args", {}))
+                    call_id = fn_call.get("id", "")
+                    await ws.send_json({"type": "tool_start", "tool": fn_name})
+                    result = await _dispatch_tool(fn_name, fn_args, kb_name)
+                    await ws.send_json({"type": "tool_done", "tool": fn_name})
                     await gemini_ws.send(json.dumps({
-                        "tool_response": {"function_responses": tool_responses}
+                        "tool_response": {
+                            "function_responses": [{
+                                "id": call_id,
+                                "name": fn_name,
+                                "response": {"output": result},
+                            }]
+                        }
                     }))
 
-                # Input transcription
-                input_transcript = (
-                    resp.get("serverContent", {})
-                    .get("inputTranscription", {})
-                    .get("text", "")
-                )
-                if input_transcript:
-                    transcript_turns.append({"role": "user", "text": input_transcript})
-                    await ws.send_json({"type": "transcript", "role": "user", "text": input_transcript})
-
+        wdog_task = asyncio.create_task(watchdog())
+        ping_task = asyncio.create_task(ping_browser())
         try:
-            await asyncio.gather(
-                asyncio.create_task(browser_to_gemini()),
-                asyncio.create_task(gemini_to_browser()),
+            done, pending = await asyncio.wait(
+                [
+                    asyncio.create_task(browser_to_gemini()),
+                    asyncio.create_task(gemini_to_browser()),
+                ],
+                return_when=asyncio.FIRST_COMPLETED,
             )
+            for task in pending:
+                task.cancel()
+                with suppress(asyncio.CancelledError):
+                    await task
         finally:
-            wdog.cancel()
+            wdog_task.cancel()
+            ping_task.cancel()
             with suppress(asyncio.CancelledError):
-                await wdog
+                await wdog_task
+            with suppress(asyncio.CancelledError):
+                await ping_task
 
 
 # ── helpers ───────────────────────────────────────────────────────────────
 
-async def _build_system_instruction(
-    session_id: str | None,
-    user_id: str,
-) -> str:
-    """Build system instruction from chat history + TutorBot soul."""
+async def _build_system_instruction(session_id: str | None) -> str:
     lines = [
-        "You are an expert AI tutor. You speak naturally, clearly, and "
-        "adapt your explanations to the student's level. Keep answers "
-        "focused and conversational — you are in a live voice session.",
+        "You are an expert AI tutor in a live voice session. "
+        "Speak naturally and conversationally. Keep answers focused "
+        "and clear. Adapt your explanations to the student's level.",
     ]
-
     if session_id:
         try:
             store = get_session_store()
             session = await store.get_session_with_messages(session_id)
             if session:
-                messages = session.get("messages", [])[-10:]  # last 10
-                context_lines = []
+                messages = (session.get("messages") or [])[-10:]
+                context = []
                 for m in messages:
                     role = m.get("role", "")
-                    content = str(m.get("content", ""))[:200]
+                    content = str(m.get("content", ""))[:200].replace("\n", " ")
                     if role and content:
-                        context_lines.append(f"{role.title()}: {content}")
-                if context_lines:
-                    lines.append(
-                        "\nCONTEXT (recent chat history):\n" + "\n".join(context_lines)
-                    )
+                        context.append(f"{role.title()}: {content}")
+                if context:
+                    lines.append("\nRecent conversation context:\n" + "\n".join(context))
         except Exception as exc:
-            logger.warning("gemini_live: failed to load session context: %s", exc)
-
+            logger.debug("gemini_live: could not load session context: %s", exc)
     return "\n".join(lines)
 
 
 def _build_tool_declarations(kb_name: str | None) -> list[dict[str, Any]]:
-    """Return Gemini Live tool declarations for available AIMTutor tools."""
-    declarations = []
+    decls: list[dict[str, Any]] = []
     if kb_name:
-        declarations.append({
+        decls.append({
             "name": "search_knowledge_base",
-            "description": (
-                "Search the student's knowledge base for relevant information. "
-                "Use this when the student asks about topics from their uploaded materials."
-            ),
+            "description": "Search the student's uploaded course materials and documents.",
             "parameters": {
                 "type": "OBJECT",
-                "properties": {
-                    "query": {"type": "STRING", "description": "Search query"},
-                },
+                "properties": {"query": {"type": "STRING", "description": "What to look up"}},
                 "required": ["query"],
             },
         })
-    declarations.append({
+    decls.append({
         "name": "web_search",
         "description": "Search the web for current information on a topic.",
         "parameters": {
             "type": "OBJECT",
-            "properties": {
-                "query": {"type": "STRING", "description": "Search query"},
-            },
+            "properties": {"query": {"type": "STRING", "description": "Search query"}},
             "required": ["query"],
         },
     })
-    declarations.append({
-        "name": "write_note",
-        "description": "Save an important point to the student's notebook for later review.",
-        "parameters": {
-            "type": "OBJECT",
-            "properties": {
-                "content": {"type": "STRING", "description": "The note text"},
-                "title": {"type": "STRING", "description": "Short title"},
-            },
-            "required": ["content"],
-        },
-    })
-    return [{"function_declarations": declarations}]
+    return [{"function_declarations": decls}] if decls else []
 
 
 async def _dispatch_tool(
-    name: str,
-    args: dict[str, Any],
-    kb_name: str | None,
+    name: str, args: dict[str, Any], kb_name: str | None
 ) -> str:
-    """Execute a tool call from Gemini Live and return a string result."""
     try:
         if name == "search_knowledge_base" and kb_name:
             from aimtutor.tools.rag_tool import rag_search
             result = await rag_search(query=args.get("query", ""), kb_name=kb_name)
-            sources = result.get("sources", [])
+            sources = result.get("sources") or result.get("results") or []
             if not sources:
                 return "No relevant information found in the knowledge base."
             return "\n\n".join(
-                f"[{s.get('source', 'Source')}]\n{s.get('content', '')[:400]}"
+                f"[{s.get('source', 'Source')}]\n{str(s.get('content') or s.get('text', ''))[:400]}"
                 for s in sources[:3]
             )
         elif name == "web_search":
             from aimtutor.tools.web_search import web_search
-            results = await web_search(query=args.get("query", ""))
-            if not results:
+            # web_search is synchronous — run in thread pool
+            result = await asyncio.to_thread(web_search, args.get("query", ""))
+            if not result:
                 return "No search results found."
-            if isinstance(results, list):
+            # WebSearchResponse or dict — extract readable text
+            if hasattr(result, "results"):
+                items = result.results[:3]
                 return "\n".join(
-                    f"- {r.get('title','')}: {r.get('snippet','')}"
-                    for r in results[:3]
+                    f"- {getattr(r, 'title', '')} ({getattr(r, 'url', '')}): {getattr(r, 'snippet', '')}"
+                    for r in items
                 )
-            return str(results)[:600]
-        elif name == "write_note":
-            # Best-effort note save — don't block if unavailable
-            try:
-                from aimtutor.tools.write_note import write_note
-                await write_note(
-                    title=args.get("title", "Voice Note"),
-                    content=args.get("content", ""),
-                )
-            except Exception:
-                pass
-            return "Note saved to your notebook."
+            return str(result)[:600]
         else:
             return f"Tool '{name}' is not available."
     except Exception as exc:
-        logger.warning("gemini_live: tool '%s' failed: %s", name, exc)
+        logger.warning("gemini_live tool '%s' failed: %s", name, exc)
         return f"Tool execution failed: {exc}"
 
 
@@ -621,23 +542,11 @@ async def _flush_to_memory(
 ) -> None:
     """Append voice session transcript to the L1 memory trace."""
     import datetime
-    from pathlib import Path
-
     try:
-        from aimtutor.multi_user.paths import MULTI_USER_ROOT, scope_for_user
-        from aimtutor.runtime.home import get_runtime_home
-
-        home = get_runtime_home()
-        # Determine workspace root
-        if user_id == "anonymous" or not (MULTI_USER_ROOT / user_id).exists():
-            trace_dir = home / "data" / "workspace" / "memory" / "trace" / "chat"
-        else:
-            trace_dir = MULTI_USER_ROOT / user_id / "memory" / "trace" / "chat"
-
+        from aimtutor.services.memory.paths import memory_root
+        trace_dir = memory_root() / "trace" / "chat"
         trace_dir.mkdir(parents=True, exist_ok=True)
         date_str = datetime.date.today().isoformat()
-        trace_file = trace_dir / f"{date_str}.jsonl"
-
         record = {
             "type": "voice_session",
             "session_id": session_id or f"voice-{int(time.time())}",
@@ -651,9 +560,8 @@ async def _flush_to_memory(
             "turn_count": len(turns),
             "turns": turns,
         }
-        with open(trace_file, "a", encoding="utf-8") as f:
+        with open(trace_dir / f"{date_str}.jsonl", "a", encoding="utf-8") as f:
             f.write(json.dumps(record, ensure_ascii=False) + "\n")
-
-        logger.debug("gemini_live: flushed %d turns to L1 trace", len(turns))
+        logger.debug("gemini_live: flushed %d turns to memory", len(turns))
     except Exception as exc:
         logger.warning("gemini_live: memory flush failed: %s", exc)
