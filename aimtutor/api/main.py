@@ -293,6 +293,7 @@ from aimtutor.api.routers import (
     tools as tools_router,
 )
 from aimtutor.multi_user.router import router as multi_user_router  # noqa: E402
+from aimtutor.api.routers.gemini_live import router as gemini_live_router  # noqa: E402
 
 # Auth router is public — login/logout/register/status require no token
 app.include_router(auth.router, prefix="/api/v1/auth", tags=["auth"])
@@ -375,6 +376,13 @@ app.include_router(unified_ws.router, prefix="/api/v1", tags=["unified-ws"])
 # Quiz AI-judge WebSocket — same caveat as unified_ws above; auth is checked
 # inside the handler so the WS upgrade isn't rejected by an HTTP-style dep.
 app.include_router(quiz_judge.router, prefix="/api/v1", tags=["quiz-judge"])
+
+# Gemini Live voice — auth checked inside the WS handler (token-based)
+app.include_router(
+    gemini_live_router,
+    prefix="/api/v1/gemini-live",
+    tags=["gemini-live"],
+)
 
 
 @app.get("/")

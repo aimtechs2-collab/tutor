@@ -15,11 +15,15 @@ import {
   AtSign,
   ChevronDown,
   Database,
+  Mic,
   Paperclip,
   Square,
   X,
   type LucideIcon,
 } from "lucide-react";
+import { lazy, Suspense, useState as useVoiceState } from "react";
+
+const GeminiLivePanel = lazy(() => import("@/components/gemini-live/GeminiLivePanel"));
 import {
   ATTACHMENT_ACCEPT,
   docIconFor,
@@ -780,6 +784,8 @@ export default memo(function ChatComposer({
                   onChange={onSelectLLM}
                 />
 
+                {/* Gemini Live voice button */}
+                <VoiceTutorButton sessionId={sessionId} kbName={activeKbName} />
                 {isStreaming ? (
                   <button
                     type="button"
@@ -834,4 +840,61 @@ export default memo(function ChatComposer({
       </div>
     </div>
   );
+
+// ── VoiceTutorButton ─────────────────────────────────────────────────────
+
+function VoiceTutorButton({
+  sessionId,
+  kbName,
+}: {
+  sessionId?: string;
+  kbName?: string;
+}) {
+  const [open, setOpen] = useVoiceState(false);
+  const [enabled, setEnabled] = useVoiceState<boolean | null>(null);
+
+  // Check if Gemini Live is configured on first render
+  if (typeof window !== "undefined" && enabled === null) {
+    fetch("/api/v1/gemini-live/config", { credentials: "include" })
+      .then((r) => r.json())
+      .then((d) => setEnabled(d.enabled))
+      .catch(() => setEnabled(false));
+  }
+
+  if (!enabled) return null;
+
+  return (
+    <>
+      <button
+        type="button"
+        onClick={() => setOpen((o) => !o)}
+        title="Live Voice Tutoring (Gemini Live)"
+        aria-label="Start voice session"
+        className={`rounded-full p-[7px] transition-all ${
+          open
+            ? "bg-teal-500/20 text-teal-400 shadow-[0_0_10px_rgba(20,184,166,0.3)]"
+            : "bg-[var(--muted)] text-[var(--muted-foreground)] hover:bg-teal-500/15 hover:text-teal-400"
+        }`}
+      >
+        <Mic size={15} strokeWidth={2} />
+      </button>
+
+      {open && (
+        <div
+          className="absolute bottom-full right-0 mb-3 z-50"
+          style={{ filter: "drop-shadow(0 20px 60px rgba(0,0,0,0.5))" }}
+        >
+          <Suspense fallback={null}>
+            <GeminiLivePanel
+              sessionId={sessionId}
+              kbName={kbName}
+              onClose={() => setOpen(false)}
+            />
+          </Suspense>
+        </div>
+      )}
+    </>
+  );
+}
+
 });
