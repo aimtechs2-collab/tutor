@@ -9,6 +9,7 @@ import {
   Plug,
   Search,
   SlidersHorizontal,
+  Mic,
   Wrench,
   type LucideIcon,
 } from "lucide-react";
@@ -22,7 +23,8 @@ export type SettingsItemKey =
   | "embedding"
   | "search"
   | "memory"
-  | "capabilities";
+  | "capabilities"
+  | "voice";
 
 export interface SettingsItem {
   key: SettingsItemKey;
@@ -88,6 +90,13 @@ export const SETTINGS_ITEMS: SettingsItem[] = [
     label: "MCP servers",
     description: "External MCP servers (coming soon).",
     icon: Plug,
+  },
+  {
+    key: "voice",
+    href: "/settings/voice",
+    label: "Voice",
+    description: "Gemini Live real-time voice tutoring.",
+    icon: Mic,
   },
   {
     key: "tools",

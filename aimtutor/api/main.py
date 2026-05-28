@@ -293,7 +293,8 @@ from aimtutor.api.routers import (
     tools as tools_router,
 )
 from aimtutor.multi_user.router import router as multi_user_router  # noqa: E402
-from aimtutor.api.routers.gemini_live import router as gemini_live_router  # noqa: E402
+from aimtutor.api.routers.gemini_live import router as gemini_live_router
+from aimtutor.api.routers.presence import router as presence_router  # noqa: E402  # noqa: E402
 
 # Auth router is public — login/logout/register/status require no token
 app.include_router(auth.router, prefix="/api/v1/auth", tags=["auth"])
@@ -378,6 +379,11 @@ app.include_router(unified_ws.router, prefix="/api/v1", tags=["unified-ws"])
 app.include_router(quiz_judge.router, prefix="/api/v1", tags=["quiz-judge"])
 
 # Gemini Live voice — auth checked inside the WS handler (token-based)
+app.include_router(
+    presence_router,
+    prefix="/api/v1/presence",
+    tags=["presence"],
+)
 app.include_router(
     gemini_live_router,
     prefix="/api/v1/gemini-live",

@@ -40,6 +40,8 @@ export default function AdminUsersPage() {
   const router = useRouter();
   const [currentUser, setCurrentUser] = useState<string | null>(null);
   const [users, setUsers] = useState<UserRecord[]>([]);
+  const [onlineIds, setOnlineIds] = useState<Set<string>>(new Set());
+  const esRef = useRef<EventSource | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   const [actionError, setActionError] = useState("");
@@ -61,6 +63,7 @@ export default function AdminUsersPage() {
     } finally {
       setLoading(false);
     }
+    return () => esRef.current?.close();
   }, []);
 
   useEffect(() => {

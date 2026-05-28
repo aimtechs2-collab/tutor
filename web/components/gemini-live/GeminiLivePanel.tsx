@@ -173,9 +173,19 @@ export default function GeminiLivePanel({
   onTranscriptUpdate,
 }: GeminiLivePanelProps) {
   const [selectedVoice, setSelectedVoice] = useState(defaultVoice);
+  const [affective, setAffective] = useState(false);
+  const [config, setConfig] = useState<any>(null);
   const [textInput, setTextInput] = useState("");
   const [showShortcuts, setShowShortcuts] = useState(false);
   const [analyserNode, setAnalyserNode] = useState<AnalyserNode | null>(null);
+
+  // Load voice config (for affective dialog availability)
+  useEffect(() => {
+    fetch("/api/v1/gemini-live/config", { credentials: "include" })
+      .then((r) => r.json())
+      .then(setConfig)
+      .catch(() => {});
+  }, []);
 
   const transcriptRef = useRef<HTMLDivElement>(null);
   const panelRef = useRef<HTMLDivElement>(null);
@@ -232,6 +242,7 @@ export default function GeminiLivePanel({
       voice: selectedVoice,
       sessionId,
       kbName,
+      enableAffectiveDialog: affective,
     });
   }, [startSession, selectedVoice, sessionId, kbName]);
 
@@ -471,6 +482,22 @@ export default function GeminiLivePanel({
               </option>
             ))}
           </select>
+
+          {/* Affective dialog toggle — only for 2.5 model */}
+          {config?.models?.some((m: any) => m.id === selectedVoice && m.affective_dialog) && (
+            <button
+              onClick={() => setAffective((a) => !a)}
+              className="flex items-center gap-1.5 rounded-full px-2.5 py-1 text-[10px] transition-all"
+              style={{
+                background: affective ? "rgba(20,184,166,0.15)" : "var(--muted)",
+                color: affective ? "#14b8a6" : "var(--muted-foreground)",
+                border: affective ? "1px solid rgba(20,184,166,0.3)" : "1px solid transparent",
+              }}
+              title="Gemini adapts its tone to your emotional expression (2.5 Flash only)"
+            >
+              ✨ Adaptive tone
+            </button>
+          )}
 
           <button
             onClick={clearTranscript}
