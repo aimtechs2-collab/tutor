@@ -6,6 +6,7 @@ import ToastViewport from "@/components/common/ToastViewport";
 import { AuthProvider } from "@/components/auth/AuthProvider";
 import { AppShellProvider } from "@/context/AppShellContext";
 import { I18nClientBridge } from "@/i18n/I18nClientBridge";
+import { HeartbeatProvider } from "@/components/HeartbeatProvider";
 
 const fontSans = Plus_Jakarta_Sans({
   subsets: ["latin"],
@@ -50,7 +51,7 @@ export default function RootLayout({
       <body className="font-sans bg-[var(--background)] text-[var(--foreground)]">
         <AuthProvider>
           <AppShellProvider>
-            <I18nClientBridge>{children}</I18nClientBridge>
+            <I18nClientBridge><HeartbeatProvider>{children}</HeartbeatProvider></I18nClientBridge>
             <ToastViewport />
           </AppShellProvider>
         </AuthProvider>
