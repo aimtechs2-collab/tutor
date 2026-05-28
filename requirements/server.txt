@@ -19,6 +19,8 @@ python-multipart>=0.0.6
 # --- Authentication ---
 bcrypt>=4.0.0
 python-jose[cryptography]>=3.3.0
+clerk==2.1.0
+svix>=1.20.0
 
 # --- PocketBase (optional sidecar backend) ---
 # Only used when integrations.pocketbase_url is configured.

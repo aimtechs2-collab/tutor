@@ -115,6 +115,42 @@ export function apiUrl(path: string): string {
  * @param path - WebSocket path (e.g., '/api/v1/solve')
  * @returns WebSocket URL (e.g., 'ws://localhost:8001/api/v1/ws')
  */
+const AUTH_ENABLED = process.env.NEXT_PUBLIC_AUTH_ENABLED === "true";
+const CLERK_ENABLED = Boolean(process.env.NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY);
+
+declare global {
+  interface Window {
+    __aimtutorGetClerkToken?: () => Promise<string | null>;
+    __aimtutorClerkToken?: string;
+  }
+}
+
+function appendClerkToken(url: string, token: string | undefined): string {
+  if (!CLERK_ENABLED || !token) return url;
+  const parsed = new URL(url);
+  parsed.searchParams.set("token", token);
+  return parsed.toString();
+}
+
+async function clerkAuthorizationHeader(): Promise<Record<string, string>> {
+  if (!CLERK_ENABLED || typeof window === "undefined") return {};
+  const token =
+    (await window.__aimtutorGetClerkToken?.()) || window.__aimtutorClerkToken;
+  return token ? { Authorization: `Bearer ${token}` } : {};
+}
+
+function mergeHeaders(
+  base: HeadersInit | undefined,
+  extra: Record<string, string>,
+): HeadersInit | undefined {
+  if (!Object.keys(extra).length) return base;
+  const headers = new Headers(base);
+  for (const [key, value] of Object.entries(extra)) {
+    if (!headers.has(key)) headers.set(key, value);
+  }
+  return headers;
+}
+
 export function wsUrl(path: string): string {
   // Security Hardening: Convert http to ws and https to wss.
   // In production environments (where API_BASE_URL starts with https), this ensures secure websockets.
@@ -128,10 +164,19 @@ export function wsUrl(path: string): string {
   // Remove trailing slash from base URL if present
   const normalizedBase = base.endsWith("/") ? base.slice(0, -1) : base;
 
-  return `${normalizedBase}${normalizedPath}`;
+  return appendClerkToken(
+    `${normalizedBase}${normalizedPath}`,
+    typeof window === "undefined" ? undefined : window.__aimtutorClerkToken,
+  );
 }
 
-const AUTH_ENABLED = process.env.NEXT_PUBLIC_AUTH_ENABLED === "true";
+export async function wsUrlWithAuth(path: string): Promise<string> {
+  const url = wsUrl(path);
+  if (!CLERK_ENABLED || typeof window === "undefined") return url;
+  const token =
+    (await window.__aimtutorGetClerkToken?.()) || window.__aimtutorClerkToken;
+  return appendClerkToken(url, token || undefined);
+}
 
 /**
  * Authenticated fetch wrapper. Behaves identically to `fetch` but automatically
@@ -141,11 +186,22 @@ export async function apiFetch(
   input: RequestInfo | URL,
   init?: RequestInit,
 ): Promise<Response> {
-  const res = await fetch(input, { credentials: "include", ...init });
+  const authHeaders = await clerkAuthorizationHeader();
+  const res = await fetch(input, {
+    credentials: "include",
+    ...init,
+    headers: mergeHeaders(init?.headers, authHeaders),
+  });
 
-  if (res.status === 401 && AUTH_ENABLED && typeof window !== "undefined") {
+  if (
+    res.status === 401 &&
+    (AUTH_ENABLED || CLERK_ENABLED) &&
+    typeof window !== "undefined"
+  ) {
     const next = encodeURIComponent(window.location.pathname);
-    window.location.href = `/login?next=${next}`;
+    window.location.href = CLERK_ENABLED
+      ? `/sign-in?redirect_url=${next}`
+      : `/login?next=${next}`;
     return new Promise(() => {});
   }
 

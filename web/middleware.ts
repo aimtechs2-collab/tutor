@@ -1,16 +1,32 @@
+import { clerkMiddleware, createRouteMatcher } from "@clerk/nextjs/server";
+import type { NextFetchEvent } from "next/server";
 import { NextRequest, NextResponse } from "next/server";
 
-const AUTH_ENABLED = process.env.NEXT_PUBLIC_AUTH_ENABLED === "true";
+const CLERK_ENABLED = Boolean(process.env.NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY);
+const LEGACY_AUTH_ENABLED = process.env.NEXT_PUBLIC_AUTH_ENABLED === "true";
 const LOGIN_PATH = "/login";
 const COOKIE_NAME = "dt_token";
 
-export function middleware(req: NextRequest) {
-  // Auth is disabled (default) — let everything through
-  if (!AUTH_ENABLED) return NextResponse.next();
+const isPublicRoute = createRouteMatcher([
+  "/",
+  "/sign-in(.*)",
+  "/sign-up(.*)",
+  "/login(.*)",
+  "/register(.*)",
+  "/api/webhooks(.*)",
+  "/api/v1/gemini-live/config",
+]);
+
+const clerkProtectedMiddleware = clerkMiddleware(async (auth, req) => {
+  if (!isPublicRoute(req)) {
+    await auth.protect();
+  }
+});
+
+function legacyMiddleware(req: NextRequest) {
+  if (!LEGACY_AUTH_ENABLED) return NextResponse.next();
 
   const { pathname } = req.nextUrl;
-
-  // Always allow auth pages and Next.js internals
   if (
     pathname.startsWith(LOGIN_PATH) ||
     pathname.startsWith("/register") ||
@@ -20,10 +36,7 @@ export function middleware(req: NextRequest) {
     return NextResponse.next();
   }
 
-  const token = req.cookies.get(COOKIE_NAME)?.value;
-
-  // No token — redirect to login, preserving the intended destination
-  if (!token) {
+  if (!req.cookies.get(COOKIE_NAME)?.value) {
     const loginUrl = req.nextUrl.clone();
     loginUrl.pathname = LOGIN_PATH;
     loginUrl.searchParams.set("next", pathname);
@@ -33,7 +46,14 @@ export function middleware(req: NextRequest) {
   return NextResponse.next();
 }
 
+export default function middleware(req: NextRequest, event: NextFetchEvent) {
+  if (CLERK_ENABLED) return clerkProtectedMiddleware(req, event);
+  return legacyMiddleware(req);
+}
+
 export const config = {
-  // Run on all page routes, skip API and static assets
-  matcher: ["/((?!api|_next/static|_next/image|favicon.ico).*)"],
+  matcher: [
+    "/((?!_next|[^?]*\\.(?:html?|css|js(?!on)|jpe?g|webp|png|gif|svg|ttf|woff2?|ico|csv|docx?|xlsx?|zip|webmanifest)).*)",
+    "/(api|trpc)(.*)",
+  ],
 };

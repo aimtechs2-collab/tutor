@@ -10,7 +10,7 @@
  * - resume_from after reconnection to continue a streaming turn
  */
 
-import { wsUrl } from "./api";
+import { wsUrlWithAuth } from "./api";
 
 // ---- StreamEvent types (mirror Python StreamEventType) ----
 
@@ -180,11 +180,11 @@ export class UnifiedWSClient {
     this.lastSeq = seq;
   }
 
-  connect(): void {
+  async connect(): Promise<void> {
     if (this.ws && this.ws.readyState <= WebSocket.OPEN) return;
     this.intentionalClose = false;
 
-    const url = wsUrl("/api/v1/ws");
+    const url = await wsUrlWithAuth("/api/v1/ws");
     this.ws = new WebSocket(url);
 
     this.ws.onopen = () => {

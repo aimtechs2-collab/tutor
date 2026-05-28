@@ -15,6 +15,12 @@ from fastapi import (
 )
 from pydantic import BaseModel, field_validator
 
+from aimtutor.auth_clerk import (
+    clerk_is_enabled,
+    clerk_token_payload,
+    is_admin as clerk_claims_is_admin,
+    verify_clerk_token,
+)
 from aimtutor.services.config import load_auth_settings
 
 # SameSite=None lets the cookie work when the browser accesses the frontend via
@@ -157,7 +163,7 @@ def _extract_token(authorization: str | None, dt_token: str | None) -> str | Non
 # ---------------------------------------------------------------------------
 
 
-def require_auth(
+async def require_auth(
     authorization: str | None = Header(default=None, alias="Authorization"),
     dt_token: str | None = Cookie(default=None),
 ) -> TokenPayload | None:
@@ -174,6 +180,21 @@ def require_auth(
     Returns the authenticated TokenPayload, or None if auth is disabled.
     Raises HTTP 401 if auth is enabled but the token is missing or invalid.
     """
+    if clerk_is_enabled():
+        token = _bearer_token_from_header(authorization)
+        if not token:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Not authenticated",
+                headers={"WWW-Authenticate": "Bearer"},
+            )
+        claims = await verify_clerk_token(token)
+        payload = clerk_token_payload(claims)
+        from aimtutor.multi_user.context import set_current_user, user_from_token_payload
+
+        set_current_user(user_from_token_payload(payload))
+        return payload
+
     if not AUTH_ENABLED:
         from aimtutor.multi_user.context import set_current_user
         from aimtutor.multi_user.paths import local_admin_user
@@ -236,6 +257,14 @@ async def ws_require_auth(ws: WebSocket) -> _CtxToken | _WsAuthFailed:
     from aimtutor.multi_user.paths import local_admin_user
     from aimtutor.services.auth import AUTH_ENABLED, decode_token
 
+    if clerk_is_enabled():
+        token = ws.query_params.get("token")
+        claims = await verify_clerk_token(token) if token else None
+        if not claims:
+            await ws.close(code=4001)
+            return ws_auth_failed
+        return set_current_user(user_from_token_payload(clerk_token_payload(claims)))
+
     if not AUTH_ENABLED:
         return set_current_user(local_admin_user())
 
@@ -248,7 +277,7 @@ async def ws_require_auth(ws: WebSocket) -> _CtxToken | _WsAuthFailed:
     return set_current_user(user_from_token_payload(payload))
 
 
-def require_admin(
+async def require_admin(
     payload: TokenPayload | None = Depends(require_auth),
 ) -> TokenPayload:
     """
@@ -257,7 +286,7 @@ def require_admin(
     Raises HTTP 403 if the authenticated user is not an admin.
     When AUTH_ENABLED=false, all requests are treated as admin.
     """
-    if not AUTH_ENABLED:
+    if not clerk_is_enabled() and not AUTH_ENABLED:
         from aimtutor.services.auth import TokenPayload as TP
 
         return TP(username="local", role="admin", user_id="local-admin")
@@ -281,6 +310,19 @@ async def auth_status(
     dt_token: str | None = Cookie(default=None),
 ) -> AuthStatusResponse:
     """Return whether auth is enabled and whether the current request is authenticated."""
+    if clerk_is_enabled():
+        token = _bearer_token_from_header(authorization)
+        claims = await verify_clerk_token(token) if token else None
+        payload = clerk_token_payload(claims) if claims else None
+        return AuthStatusResponse(
+            enabled=True,
+            authenticated=payload is not None,
+            user_id=payload.user_id if payload else None,
+            username=payload.username if payload else None,
+            role=payload.role if payload else None,
+            is_admin=clerk_claims_is_admin(claims) if claims else False,
+        )
+
     if not AUTH_ENABLED:
         return AuthStatusResponse(
             enabled=False,
@@ -306,6 +348,12 @@ async def auth_status(
 @router.post("/login")
 async def login(body: LoginRequest, response: Response) -> dict:
     """Validate credentials and set a JWT cookie."""
+    if clerk_is_enabled():
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Clerk auth is enabled. Use /sign-in.",
+        )
+
     if not AUTH_ENABLED:
         return {"ok": True, "message": "Auth is disabled — no login required."}
 
@@ -382,6 +430,12 @@ async def register(body: RegisterRequest) -> dict:
 
     Only available when AUTH_ENABLED=true.
     """
+    if clerk_is_enabled():
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Clerk auth is enabled. Use /sign-up.",
+        )
+
     if not AUTH_ENABLED:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
