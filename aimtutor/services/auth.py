@@ -16,11 +16,9 @@ Multi-user setup (recommended):
     Navigate to /register in the browser. The first user to register is granted
     admin privileges and can manage other users from /admin/users.
 
-    Users are stored in data/user/auth_users.json:
-        {
-            "alice": {"hash": "$2b$12$...", "role": "admin", "created_at": "2026-..."},
-            "bob":   {"hash": "$2b$12$...", "role": "user",  "created_at": "2026-..."}
-        }
+    Users and the JWT signing secret are stored in Postgres through the Prisma
+    auth_users/auth_secrets tables. The first account must be created through
+    /register.
 """
 
 from dataclasses import dataclass
@@ -343,6 +341,8 @@ def authenticate(username: str, password: str) -> TokenPayload | None:
 
     record = users.get(username)
     if not record:
+        return None
+    if bool(record.get("disabled", False)):
         return None
 
     hashed = record.get("hash", "") if isinstance(record, dict) else record

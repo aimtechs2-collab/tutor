@@ -123,3 +123,24 @@ model NotebookEntryCategory {
   @@map("notebook_entry_categories")
 }
 
+model AuthUser {
+  id           String   @id
+  username     String   @unique
+  passwordHash String   @map("password_hash")
+  role         String   @default("user")
+  createdAt    DateTime @default(now()) @map("created_at")
+  updatedAt    DateTime @updatedAt @map("updated_at")
+  disabled     Boolean  @default(false)
+
+  @@index([role])
+  @@map("auth_users")
+}
+
+model AuthSecret {
+  name      String   @id
+  value     String
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  @@map("auth_secrets")
+}

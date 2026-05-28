@@ -1,36 +1,39 @@
-"""Canonical identity store for the optional multi-user layer."""
+"""Canonical identity store for the optional multi-user layer.
+
+User accounts are persisted in Postgres through the Prisma-managed
+``auth_users`` table. The first account must be created through the registration
+flow; local JSON/bootstrap users are not considered authoritative.
+"""
 
 from __future__ import annotations
 
+from contextlib import contextmanager
 from datetime import datetime, timezone
-import json
 import logging
-from pathlib import Path
 import secrets
 import threading
-from typing import Any
+from typing import Any, Iterator
 from uuid import uuid4
 
+import psycopg2
+from psycopg2.extras import RealDictCursor
+
 from aimtutor.runtime.home import get_runtime_home
+from aimtutor.services.session.db_config import get_postgres_database_url
 
 from .models import Role
 
 logger = logging.getLogger(__name__)
 
-# Serialises writes to USERS_FILE so a concurrent burst of /register requests
-# cannot all see ``not users`` and each promote themselves to admin. Single-
-# process FastAPI deployments (the ``aimtutor start`` launcher) are fully covered;
-# multi-worker deployments still race and must rely on an external user store
-# (e.g. PocketBase), which is documented in the multi-user README.
 _USERS_WRITE_LOCK = threading.Lock()
+_SCHEMA_LOCK = threading.Lock()
+_SCHEMA_READY = False
 
 PROJECT_ROOT = get_runtime_home()
 MULTI_USER_ROOT = PROJECT_ROOT / "multi-user"
 SYSTEM_ROOT = MULTI_USER_ROOT / "_system"
 AUTH_DIR = SYSTEM_ROOT / "auth"
-USERS_FILE = AUTH_DIR / "users.json"
 SECRET_FILE = AUTH_DIR / "auth_secret"
-LEGACY_USERS_FILE = PROJECT_ROOT / "data" / "user" / "auth_users.json"
 LEGACY_SECRET_FILE = PROJECT_ROOT / "data" / "user" / "auth_secret"
 
 
@@ -42,151 +45,151 @@ def utc_now() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
-def _canonical_record(
-    username: str,
-    value: Any,
-    *,
-    default_role: Role = "user",
-) -> dict[str, Any] | None:
-    if isinstance(value, str):
-        return {
-            "id": new_user_id(),
-            "hash": value,
-            "role": default_role,
-            "created_at": utc_now(),
-            "disabled": False,
-        }
-    if not isinstance(value, dict):
-        return None
-    hashed = str(value.get("hash") or value.get("password_hash") or "")
-    if not hashed:
-        return None
-    role = str(value.get("role") or default_role)
-    if role not in {"admin", "user"}:
-        role = default_role
-    return {
-        "id": str(value.get("id") or new_user_id()),
-        "hash": hashed,
-        "role": role,
-        "created_at": str(value.get("created_at") or utc_now()),
-        "disabled": bool(value.get("disabled", False)),
-    }
+def _database_url() -> str:
+    return get_postgres_database_url()
 
 
-def _read_json(path: Path) -> dict[str, Any]:
+@contextmanager
+def _connect() -> Iterator[Any]:
+    database_url = _database_url()
+    if not database_url:
+        raise RuntimeError("Postgres DATABASE_URL is required for user management")
+    conn = psycopg2.connect(database_url, cursor_factory=RealDictCursor)
     try:
-        loaded = json.loads(path.read_text(encoding="utf-8"))
-        return loaded if isinstance(loaded, dict) else {}
-    except Exception as exc:
-        logger.warning("Failed to read %s: %s", path, exc)
-        return {}
+        yield conn
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
 
 
-def _write_users(users: dict[str, dict[str, Any]]) -> None:
-    USERS_FILE.parent.mkdir(parents=True, exist_ok=True)
-    USERS_FILE.write_text(json.dumps(users, indent=2, ensure_ascii=False), encoding="utf-8")
-
-
-def _migrate_legacy_users() -> dict[str, dict[str, Any]] | None:
-    if USERS_FILE.exists() or not LEGACY_USERS_FILE.exists():
-        return None
-    legacy = _read_json(LEGACY_USERS_FILE)
-    users: dict[str, dict[str, Any]] = {}
-    for username, value in legacy.items():
-        role: Role = "admin" if not users else "user"
-        if isinstance(value, dict) and str(value.get("role") or "") in {"admin", "user"}:
-            role = str(value.get("role"))  # type: ignore[assignment]
-        record = _canonical_record(username, value, default_role=role)
-        if record is not None:
-            users[str(username)] = record
-    if users:
-        _write_users(users)
-        logger.info("Migrated auth users from %s to %s", LEGACY_USERS_FILE, USERS_FILE)
-        return users
-    return None
-
-
-def _migrate_secret() -> None:
-    if SECRET_FILE.exists() or not LEGACY_SECRET_FILE.exists():
+def _ensure_schema() -> None:
+    global _SCHEMA_READY
+    if _SCHEMA_READY:
         return
-    try:
-        secret = LEGACY_SECRET_FILE.read_text(encoding="utf-8").strip()
-        if secret:
-            SECRET_FILE.parent.mkdir(parents=True, exist_ok=True)
-            SECRET_FILE.write_text(secret, encoding="utf-8")
-            try:
-                SECRET_FILE.chmod(0o600)
-            except OSError:
-                pass
-            logger.info("Migrated auth secret from %s to %s", LEGACY_SECRET_FILE, SECRET_FILE)
-    except Exception as exc:
-        logger.warning("Failed to migrate legacy auth secret: %s", exc)
+    with _SCHEMA_LOCK:
+        if _SCHEMA_READY:
+            return
+        with _connect() as conn, conn.cursor() as cur:
+            cur.execute(
+                """
+                CREATE TABLE IF NOT EXISTS auth_users (
+                    id TEXT PRIMARY KEY,
+                    username TEXT NOT NULL UNIQUE,
+                    password_hash TEXT NOT NULL,
+                    role TEXT NOT NULL DEFAULT 'user',
+                    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+                    updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+                    disabled BOOLEAN NOT NULL DEFAULT FALSE,
+                    CONSTRAINT auth_users_role_check CHECK (role IN ('admin', 'user'))
+                );
+
+                CREATE INDEX IF NOT EXISTS auth_users_role_idx
+                    ON auth_users(role);
+
+                CREATE TABLE IF NOT EXISTS auth_secrets (
+                    name TEXT PRIMARY KEY,
+                    value TEXT NOT NULL,
+                    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+                    updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+                );
+                """
+            )
+            conn.commit()
+        _SCHEMA_READY = True
+
+
+def _row_created_at(row: dict[str, Any]) -> str:
+    value = row.get("created_at")
+    if isinstance(value, datetime):
+        return value.astimezone(timezone.utc).isoformat()
+    return str(value or "")
+
+
+def _row_to_record(row: dict[str, Any]) -> tuple[str, dict[str, Any]]:
+    username = str(row["username"])
+    role = str(row.get("role") or "user")
+    if role not in {"admin", "user"}:
+        role = "user"
+    return username, {
+        "id": str(row.get("id") or ""),
+        "hash": str(row.get("password_hash") or ""),
+        "role": role,
+        "created_at": _row_created_at(row),
+        "disabled": bool(row.get("disabled", False)),
+    }
 
 
 def load_users(  # nosec B107 - empty defaults mean "no env fallback supplied".
     env_username: str = "",
     env_password_hash: str = "",
 ) -> dict[str, dict[str, Any]]:
-    """Load canonical users, migrating legacy records and env fallback in memory."""
-    users: dict[str, dict[str, Any]] | None = None
-    if USERS_FILE.exists():
-        users = _read_json(USERS_FILE)
-    else:
-        users = _migrate_legacy_users()
+    """Load canonical users from Postgres only.
 
-    if users is None:
-        users = {}
-
-    canonical: dict[str, dict[str, Any]] = {}
-    changed = False
-    for index, (username, value) in enumerate(users.items()):
-        role: Role = "admin" if index == 0 else "user"
-        if isinstance(value, dict) and str(value.get("role") or "") in {"admin", "user"}:
-            role = str(value.get("role"))  # type: ignore[assignment]
-        record = _canonical_record(str(username), value, default_role=role)
-        if record is None:
-            changed = True
-            continue
-        canonical[str(username)] = record
-        changed = changed or record != value
-
-    if USERS_FILE.exists() and changed:
-        _write_users(canonical)
-
-    if canonical:
-        return canonical
-
-    if env_username and env_password_hash:
-        return {
-            env_username: {
-                "id": "env-admin",
-                "hash": env_password_hash,
-                "role": "admin",
-                "created_at": "",
-                "disabled": False,
-            }
-        }
-
-    return {}
+    ``env_username`` and ``env_password_hash`` are accepted for legacy call
+    compatibility but intentionally ignored. The first persisted account must
+    be created through registration.
+    """
+    _ensure_schema()
+    with _connect() as conn, conn.cursor() as cur:
+        cur.execute(
+            """
+            SELECT id, username, password_hash, role, created_at, disabled
+            FROM auth_users
+            ORDER BY created_at ASC, username ASC
+            """
+        )
+        rows = cur.fetchall()
+    users: dict[str, dict[str, Any]] = {}
+    for row in rows:
+        username, record = _row_to_record(dict(row))
+        users[username] = record
+    return users
 
 
 def save_user(username: str, hashed_password: str, role: Role = "user") -> dict[str, Any]:
-    USERS_FILE.parent.mkdir(parents=True, exist_ok=True)
-    # Read-modify-write must be atomic so concurrent first-time registrations
-    # cannot each see an empty store and each promote themselves to admin.
+    """Create or update a user in Postgres.
+
+    The first persisted user is always promoted to admin, matching the
+    bootstrap behavior expected by the register UI.
+    """
+    _ensure_schema()
     with _USERS_WRITE_LOCK:
-        users = load_users()
-        effective_role: Role = "admin" if not users else role
-        existing = users.get(username) or {}
-        record = {
-            "id": str(existing.get("id") or new_user_id()),
-            "hash": hashed_password,
-            "role": effective_role,
-            "created_at": str(existing.get("created_at") or utc_now()),
-            "disabled": bool(existing.get("disabled", False)),
-        }
-        users[username] = record
-        _write_users(users)
+        with _connect() as conn, conn.cursor() as cur:
+            cur.execute("SELECT pg_advisory_xact_lock(hashtext('aimtutor-auth-users'))")
+            cur.execute(
+                """
+                SELECT id, role, created_at, disabled
+                FROM auth_users
+                WHERE username = %s
+                """,
+                (username,),
+            )
+            existing = cur.fetchone()
+            cur.execute("SELECT COUNT(*) AS count FROM auth_users")
+            effective_role: Role = "admin" if int(cur.fetchone()["count"]) == 0 else role
+            user_id = str(existing["id"]) if existing else new_user_id()
+            created_at = existing["created_at"] if existing else datetime.now(timezone.utc)
+            disabled = bool(existing["disabled"]) if existing else False
+            cur.execute(
+                """
+                INSERT INTO auth_users (
+                    id, username, password_hash, role, created_at, updated_at, disabled
+                )
+                VALUES (%s, %s, %s, %s, %s, now(), %s)
+                ON CONFLICT (username) DO UPDATE SET
+                    password_hash = EXCLUDED.password_hash,
+                    role = EXCLUDED.role,
+                    updated_at = now(),
+                    disabled = EXCLUDED.disabled
+                RETURNING id, username, password_hash, role, created_at, disabled
+                """,
+                (user_id, username, hashed_password, effective_role, created_at, disabled),
+            )
+            row = dict(cur.fetchone())
+            conn.commit()
+    _, record = _row_to_record(row)
     return record
 
 
@@ -211,55 +214,91 @@ def get_user(username: str) -> dict[str, Any] | None:
 
 
 def get_user_by_id(user_id: str) -> tuple[str, dict[str, Any]] | None:
-    for username, record in load_users().items():
-        if str(record.get("id") or "") == user_id:
-            return username, record
-    return None
+    _ensure_schema()
+    with _connect() as conn, conn.cursor() as cur:
+        cur.execute(
+            """
+            SELECT id, username, password_hash, role, created_at, disabled
+            FROM auth_users
+            WHERE id = %s
+            """,
+            (user_id,),
+        )
+        row = cur.fetchone()
+    if row is None:
+        return None
+    return _row_to_record(dict(row))
 
 
 def delete_user(username: str) -> bool:
-    if not USERS_FILE.exists():
-        return False
-    users = load_users()
-    if username not in users:
-        return False
-    users.pop(username, None)
-    _write_users(users)
-    return True
+    _ensure_schema()
+    with _USERS_WRITE_LOCK:
+        with _connect() as conn, conn.cursor() as cur:
+            cur.execute("DELETE FROM auth_users WHERE username = %s RETURNING id", (username,))
+            removed = cur.fetchone() is not None
+            conn.commit()
+    return removed
 
 
 def set_role(username: str, role: Role) -> bool:
     if role not in {"admin", "user"}:
         raise ValueError("role must be 'admin' or 'user'")
-    if not USERS_FILE.exists():
-        return False
-    users = load_users()
-    if username not in users:
-        return False
-    users[username]["role"] = role
-    _write_users(users)
-    return True
+    _ensure_schema()
+    with _USERS_WRITE_LOCK:
+        with _connect() as conn, conn.cursor() as cur:
+            cur.execute(
+                """
+                UPDATE auth_users
+                SET role = %s, updated_at = now()
+                WHERE username = %s
+                RETURNING id
+                """,
+                (role, username),
+            )
+            updated = cur.fetchone() is not None
+            conn.commit()
+    return updated
+
+
+def _load_legacy_secret() -> str:
+    for path in (SECRET_FILE, LEGACY_SECRET_FILE):
+        try:
+            if path.exists():
+                value = path.read_text(encoding="utf-8").strip()
+                if value:
+                    return value
+        except Exception as exc:
+            logger.warning("Failed to read legacy auth secret from %s: %s", path, exc)
+    return ""
 
 
 def load_or_create_auth_secret() -> str:
-    _migrate_secret()
-    try:
-        if SECRET_FILE.exists():
-            existing = SECRET_FILE.read_text(encoding="utf-8").strip()
-            if existing:
-                return existing
-        SECRET_FILE.parent.mkdir(parents=True, exist_ok=True)
-        generated = secrets.token_hex(32)
-        SECRET_FILE.write_text(generated, encoding="utf-8")
-        try:
-            SECRET_FILE.chmod(0o600)
-        except OSError:
-            pass
-        logger.warning(
-            "Auth is enabled and no auth_secret file exists. Generated a stable local secret at %s.",
-            SECRET_FILE,
-        )
-        return generated
-    except Exception as exc:
-        logger.warning("Failed to load/create auth secret at %s: %s", SECRET_FILE, exc)
+    """Load the JWT signing secret from Postgres, creating it atomically."""
+    if not _database_url():
+        logger.warning("DATABASE_URL is not configured; using an ephemeral auth secret")
         return secrets.token_hex(32)
+
+    _ensure_schema()
+    with _USERS_WRITE_LOCK:
+        with _connect() as conn, conn.cursor() as cur:
+            cur.execute("SELECT value FROM auth_secrets WHERE name = 'jwt'")
+            row = cur.fetchone()
+            if row and str(row.get("value") or ""):
+                return str(row["value"])
+
+            generated = _load_legacy_secret() or secrets.token_hex(32)
+            cur.execute(
+                """
+                INSERT INTO auth_secrets (name, value, created_at, updated_at)
+                VALUES ('jwt', %s, now(), now())
+                ON CONFLICT (name) DO UPDATE SET
+                    value = auth_secrets.value,
+                    updated_at = auth_secrets.updated_at
+                RETURNING value
+                """,
+                (generated,),
+            )
+            value = str(cur.fetchone()["value"])
+            conn.commit()
+            logger.info("Initialized JWT auth secret in Postgres")
+            return value
