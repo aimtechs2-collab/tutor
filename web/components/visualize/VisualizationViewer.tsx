@@ -21,8 +21,9 @@ function stripCodeFence(source: string): string {
   return fenced ? fenced[1].trim() : trimmed;
 }
 
-function parseChartConfig(source: string): unknown {
+function parseChartConfig(source: string): unknown | null {
   const raw = stripCodeFence(source);
+  if (!raw) return null;
   try {
     return JSON.parse(raw);
   } catch {
@@ -32,7 +33,11 @@ function parseChartConfig(source: string): unknown {
         JSON.stringify(value.replace(/\\'/g, "'")),
       )
       .replace(/,\s*([}\]])/g, "$1");
-    return JSON.parse(jsonish);
+    try {
+      return JSON.parse(jsonish);
+    } catch {
+      return null;
+    }
   }
 }
 
@@ -59,7 +64,10 @@ function ChartJsRenderer({ config }: { config: string }) {
 
         const parsedConfig = parseChartConfig(config) as ConstructorParameters<
           typeof Chart
-        >[1];
+        >[1] | null;
+        if (!parsedConfig) {
+          throw new Error(t("Invalid or empty chart configuration"));
+        }
 
         if (cancelled) return;
 
