@@ -274,7 +274,15 @@ export default function AdminUsersPage() {
                                          hover:bg-[var(--background)] hover:text-[var(--foreground)]
                                          transition-colors"
                               >
-                                <SlidersHorizontal size={15} />
+                                <Link
+                      href={`/admin/users/${u.id}`}
+                      className="rounded p-1 opacity-60 hover:opacity-100 transition-opacity"
+                      title="View details"
+                      style={{ color: "var(--foreground)" }}
+                    >
+                      👁
+                    </Link>
+                    <SlidersHorizontal size={15} />
                               </button>
                             )}
                             <button

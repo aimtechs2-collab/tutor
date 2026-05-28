@@ -3,6 +3,8 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { useRouter } from 'next/navigation'
 import { useTranslation } from 'react-i18next'
+import { LayoutDashboard } from 'lucide-react'
+import Link from 'next/link'
 import { SidebarShell } from '@/components/sidebar/SidebarShell'
 import { UserNav } from '@/components/auth/UserNav'
 import { useAppShell } from '@/context/AppShellContext'
