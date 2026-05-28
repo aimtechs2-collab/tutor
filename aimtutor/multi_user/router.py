@@ -221,18 +221,16 @@ async def assign_space_template(
 # ── Admin analytics endpoints ─────────────────────────────────────────────
 
 import json
-import time
-from datetime import datetime, timezone, timedelta
+from datetime import datetime, timedelta, timezone
 
 from fastapi import Query as QueryParam
 
 
 @router.get("/admin/stats")
 async def admin_overview_stats(_: Any = Depends(require_admin)) -> dict[str, Any]:
-    """Platform-wide stats card for admin overview."""
+    """Platform-wide stats for admin overview."""
     users = list_user_info()
     active_users = [u for u in users if not u.get("disabled")]
-    today = datetime.now(timezone.utc).date().isoformat()
     week_ago = (datetime.now(timezone.utc).date() - timedelta(days=7)).isoformat()
 
     new_this_week = sum(
@@ -249,43 +247,35 @@ async def admin_overview_stats(_: Any = Depends(require_admin)) -> dict[str, Any
     }
 
 
-@router.get("/admin/users/{user_id}/stats")
-async def admin_user_stats(
+async def _stats_for_user(
     user_id: str,
-    _: Any = Depends(require_admin),
+    username: str,
+    record: dict,
 ) -> dict[str, Any]:
-    """Per-user stats for admin detail view. Runs under user's path context."""
-    from aimtutor.multi_user.context import set_current_user, reset_current_user
+    """Compute stats for a single user by switching context."""
+    from aimtutor.multi_user.context import reset_current_user, set_current_user
     from aimtutor.multi_user.models import CurrentUser
-    from aimtutor.services.session import get_session_store
-    from aimtutor.services.memory.paths import memory_root
     from aimtutor.multi_user.paths import scope_for_user
+    from aimtutor.services.memory.paths import memory_root
+    from aimtutor.services.session import get_session_store
 
-    result = get_user_by_id(user_id)
-    if result is None:
-        from fastapi import HTTPException
-        raise HTTPException(404, "User not found")
-
-    username, record = result
     user = CurrentUser(
         id=user_id,
         username=username,
         role=record.get("role", "user"),
         scope=scope_for_user(user_id, is_admin=record.get("role") == "admin"),
     )
-
     token = set_current_user(user)
     try:
         store = get_session_store()
         sessions = await store.list_sessions(limit=500, offset=0)
 
-        # Voice minutes
         voice_minutes = 0.0
         trace_dir = memory_root() / "trace" / "chat"
         if trace_dir.exists():
             for f in sorted(trace_dir.glob("*.jsonl"))[-30:]:
                 try:
-                    with open(f) as fh:
+                    with open(f, encoding="utf-8") as fh:
                         for line in fh:
                             rec = json.loads(line)
                             if rec.get("type") == "voice_session":
@@ -293,12 +283,15 @@ async def admin_user_stats(
                 except Exception:
                     pass
 
-        # Streak
         today = datetime.now(timezone.utc).date()
-        active_dates = sorted({
-            datetime.fromtimestamp(s.get("updated_at", 0), tz=timezone.utc).date()
-            for s in sessions if s.get("updated_at", 0) > 0
-        }, reverse=True)
+        active_dates = sorted(
+            {
+                datetime.fromtimestamp(s.get("updated_at", 0), tz=timezone.utc).date()
+                for s in sessions
+                if s.get("updated_at", 0) > 0
+            },
+            reverse=True,
+        )
         streak = 0
         for i, d in enumerate(active_dates):
             if (today - d).days == i:
@@ -306,7 +299,9 @@ async def admin_user_stats(
             else:
                 break
 
-        quiz_sessions = [s for s in sessions if s.get("capability") in ("question", "quiz")]
+        quiz_sessions = [
+            s for s in sessions if s.get("capability") in ("question", "quiz")
+        ]
         last_ts = max((s.get("updated_at", 0) for s in sessions), default=0)
 
         return {
@@ -328,24 +323,34 @@ async def admin_user_stats(
         reset_current_user(token)
 
 
+@router.get("/admin/users/{user_id}/stats")
+async def admin_user_stats(
+    user_id: str,
+    _: Any = Depends(require_admin),
+) -> dict[str, Any]:
+    result = get_user_by_id(user_id)
+    if result is None:
+        raise HTTPException(status_code=404, detail="User not found")
+    username, record = result
+    return await _stats_for_user(user_id, username, dict(record))
+
+
 @router.get("/admin/users/{user_id}/sessions")
 async def admin_user_sessions(
     user_id: str,
     limit: int = 30,
     _: Any = Depends(require_admin),
 ) -> list[dict[str, Any]]:
-    """Recent sessions for a specific user."""
-    from aimtutor.multi_user.context import set_current_user, reset_current_user
+    from aimtutor.multi_user.context import reset_current_user, set_current_user
     from aimtutor.multi_user.models import CurrentUser
-    from aimtutor.services.session import get_session_store
     from aimtutor.multi_user.paths import scope_for_user
+    from aimtutor.services.session import get_session_store
 
     result = get_user_by_id(user_id)
     if result is None:
-        from fastapi import HTTPException
-        raise HTTPException(404, "User not found")
-
+        raise HTTPException(status_code=404, detail="User not found")
     username, record = result
+
     user = CurrentUser(
         id=user_id,
         username=username,
@@ -376,20 +381,19 @@ async def admin_user_memory(
     user_id: str,
     _: Any = Depends(require_admin),
 ) -> dict[str, str]:
-    """L2 memory snapshot for a user."""
-    from aimtutor.multi_user.context import set_current_user, reset_current_user
+    from aimtutor.multi_user.context import reset_current_user, set_current_user
     from aimtutor.multi_user.models import CurrentUser
-    from aimtutor.services.memory.paths import memory_root
     from aimtutor.multi_user.paths import scope_for_user
+    from aimtutor.services.memory.paths import memory_root
 
     result = get_user_by_id(user_id)
     if result is None:
-        from fastapi import HTTPException
-        raise HTTPException(404, "User not found")
-
+        raise HTTPException(status_code=404, detail="User not found")
     username, record = result
+
     user = CurrentUser(
-        id=user_id, username=username,
+        id=user_id,
+        username=username,
         role=record.get("role", "user"),
         scope=scope_for_user(user_id, is_admin=record.get("role") == "admin"),
     )

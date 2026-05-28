@@ -1,16 +1,147 @@
-"""Dashboard API backed by the unified SQLite session store."""
+"""Dashboard API — recent activity + stats for the current user."""
 
+from __future__ import annotations
+
+import json
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Depends, HTTPException
 
+from aimtutor.api.routers.auth import require_auth
+from aimtutor.services.memory.paths import memory_root
 from aimtutor.services.session import get_session_store
 
 router = APIRouter()
 
 
+# ── helpers ───────────────────────────────────────────────────────────────
+
+def _read_voice_sessions(limit_files: int = 30) -> list[dict[str, Any]]:
+    """Read voice session records from L1 JSONL traces."""
+    voice: list[dict[str, Any]] = []
+    try:
+        trace_dir = memory_root() / "trace" / "chat"
+        if not trace_dir.exists():
+            return voice
+        for f in sorted(trace_dir.glob("*.jsonl"))[-limit_files:]:
+            with open(f, encoding="utf-8") as fh:
+                for line in fh:
+                    try:
+                        rec = json.loads(line)
+                        if rec.get("type") == "voice_session":
+                            voice.append(rec)
+                    except Exception:
+                        continue
+    except Exception:
+        pass
+    return voice
+
+
+# ── endpoints ─────────────────────────────────────────────────────────────
+
+@router.get("/stats")
+async def get_dashboard_stats(_payload: Any = Depends(require_auth)) -> dict[str, Any]:
+    """Aggregate stats for the current user's dashboard."""
+    store = get_session_store()
+    sessions = await store.list_sessions(limit=500, offset=0)
+
+    total_sessions = len(sessions)
+    quiz_sessions = [
+        s for s in sessions if s.get("capability") in ("question", "quiz")
+    ]
+    voice_sessions = _read_voice_sessions()
+    voice_minutes = sum(v.get("duration_seconds", 0) for v in voice_sessions) / 60
+
+    # Streak: count consecutive days with activity
+    today = datetime.now(timezone.utc).date()
+    active_dates = sorted(
+        {
+            datetime.fromtimestamp(s.get("updated_at", 0), tz=timezone.utc).date()
+            for s in sessions
+            if s.get("updated_at", 0) > 0
+        },
+        reverse=True,
+    )
+    streak = 0
+    for i, d in enumerate(active_dates):
+        if (today - d).days == i:
+            streak += 1
+        else:
+            break
+
+    # 7-day activity breakdown
+    seven_days: dict[str, dict[str, int]] = {
+        (today - timedelta(days=6 - i)).isoformat(): {
+            "chat": 0, "quiz": 0, "voice": 0, "research": 0, "other": 0,
+        }
+        for i in range(7)
+    }
+
+    for s in sessions:
+        day = datetime.fromtimestamp(
+            s.get("updated_at", 0), tz=timezone.utc
+        ).date().isoformat()
+        if day not in seven_days:
+            continue
+        cap = s.get("capability") or "chat"
+        if cap in ("question", "quiz"):
+            seven_days[day]["quiz"] += 1
+        elif cap == "research":
+            seven_days[day]["research"] += 1
+        elif cap in ("chat", "solve"):
+            seven_days[day]["chat"] += 1
+        else:
+            seven_days[day]["other"] += 1
+
+    for v in voice_sessions:
+        ts = v.get("started_at") or v.get("ended_at") or ""
+        try:
+            day = datetime.fromisoformat(ts).date().isoformat()
+            if day in seven_days:
+                seven_days[day]["voice"] += 1
+        except Exception:
+            pass
+
+    last_active_ts = max(
+        (s.get("updated_at", 0) for s in sessions), default=0
+    )
+
+    return {
+        "total_sessions": total_sessions,
+        "quiz_sessions": len(quiz_sessions),
+        "voice_minutes": round(voice_minutes, 1),
+        "streak_days": streak,
+        "last_active": (
+            datetime.fromtimestamp(last_active_ts, tz=timezone.utc).isoformat()
+            if last_active_ts else None
+        ),
+        "seven_day_activity": seven_days,
+    }
+
+
+@router.get("/memory-snapshot")
+async def get_memory_snapshot(
+    _payload: Any = Depends(require_auth),
+) -> dict[str, str]:
+    """Return L2 memory summaries for the current user."""
+    snapshot: dict[str, str] = {}
+    try:
+        l2_dir = memory_root() / "L2"
+        if l2_dir.exists():
+            for md_file in l2_dir.glob("*.md"):
+                snapshot[md_file.stem] = md_file.read_text(encoding="utf-8")[:2000]
+    except Exception:
+        pass
+    return snapshot
+
+
 @router.get("/recent")
-async def get_recent_activities(limit: int = 50, type: str | None = None):
+async def get_recent_activities(
+    limit: int = 50,
+    type: str | None = None,
+) -> list[dict[str, Any]]:
+    """Recent sessions — public within the app (auth handled by dependency at router level)."""
     store = get_session_store()
     sessions = await store.list_sessions(limit=limit, offset=0)
     activities: list[dict[str, Any]] = []
@@ -39,7 +170,7 @@ async def get_recent_activities(limit: int = 50, type: str | None = None):
 
 
 @router.get("/{entry_id}")
-async def get_activity_entry(entry_id: str):
+async def get_activity_entry(entry_id: str) -> dict[str, Any]:
     store = get_session_store()
     session = await store.get_session_with_messages(entry_id)
     if session is None:
@@ -59,123 +190,3 @@ async def get_activity_entry(entry_id: str):
             "summary": session.get("compressed_summary", ""),
         },
     }
-
-
-# ── Extended dashboard endpoints ──────────────────────────────────────────
-
-import json
-import time
-from datetime import datetime, timezone
-from pathlib import Path
-
-from aimtutor.api.routers.auth import require_auth
-from aimtutor.services.memory.paths import memory_root
-
-
-@router.get("/stats")
-async def get_dashboard_stats(_payload=Depends(require_auth)):
-    """Aggregate stats for the current user's dashboard."""
-    store = get_session_store()
-    sessions = await store.list_sessions(limit=500, offset=0)
-
-    total_sessions = len(sessions)
-    quiz_sessions = [s for s in sessions if s.get("capability") in ("question", "quiz")]
-    voice_sessions = []
-
-    # Read voice sessions from L1 memory traces
-    try:
-        trace_dir = memory_root() / "trace" / "chat"
-        if trace_dir.exists():
-            for f in sorted(trace_dir.glob("*.jsonl"))[-30:]:
-                with open(f) as fh:
-                    for line in fh:
-                        try:
-                            rec = json.loads(line)
-                            if rec.get("type") == "voice_session":
-                                voice_sessions.append(rec)
-                        except Exception:
-                            continue
-    except Exception:
-        pass
-
-    voice_minutes = sum(v.get("duration_seconds", 0) for v in voice_sessions) / 60
-
-    # Streak calculation from session timestamps
-    today = datetime.now(timezone.utc).date()
-    active_dates = sorted({
-        datetime.fromtimestamp(s.get("updated_at", 0), tz=timezone.utc).date()
-        for s in sessions
-        if s.get("updated_at", 0) > 0
-    }, reverse=True)
-
-    streak = 0
-    for i, d in enumerate(active_dates):
-        if (today - d).days == i:
-            streak += 1
-        else:
-            break
-
-    # 7-day activity breakdown
-    seven_days: dict[str, dict[str, int]] = {}
-    for i in range(7):
-        from datetime import timedelta
-        day = (today - timedelta(days=6 - i)).isoformat()
-        seven_days[day] = {"chat": 0, "quiz": 0, "voice": 0, "research": 0, "other": 0}
-
-    for s in sessions:
-        day = datetime.fromtimestamp(s.get("updated_at", 0), tz=timezone.utc).date().isoformat()
-        if day in seven_days:
-            cap = s.get("capability", "chat") or "chat"
-            if cap in ("question", "quiz"):
-                seven_days[day]["quiz"] += 1
-            elif cap == "research":
-                seven_days[day]["research"] += 1
-            elif cap in ("chat", "solve"):
-                seven_days[day]["chat"] += 1
-            else:
-                seven_days[day]["other"] += 1
-
-    for v in voice_sessions:
-        ts = v.get("started_at") or v.get("ended_at") or ""
-        if ts:
-            try:
-                day = datetime.fromisoformat(ts).date().isoformat()
-                if day in seven_days:
-                    seven_days[day]["voice"] += 1
-            except Exception:
-                pass
-
-    # Last active time
-    last_active_ts = max((s.get("updated_at", 0) for s in sessions), default=0)
-    last_active = (
-        datetime.fromtimestamp(last_active_ts, tz=timezone.utc).isoformat()
-        if last_active_ts else None
-    )
-
-    return {
-        "total_sessions": total_sessions,
-        "quiz_sessions": len(quiz_sessions),
-        "voice_minutes": round(voice_minutes, 1),
-        "streak_days": streak,
-        "last_active": last_active,
-        "seven_day_activity": seven_days,
-    }
-
-
-@router.get("/memory-snapshot")
-async def get_memory_snapshot(_payload=Depends(require_auth)):
-    """Return L2 memory summaries for the current user."""
-    snapshot: dict[str, str] = {}
-    try:
-        l2_dir = memory_root() / "L2"
-        if l2_dir.exists():
-            for md_file in l2_dir.glob("*.md"):
-                content = md_file.read_text(encoding="utf-8")
-                snapshot[md_file.stem] = content[:2000]
-    except Exception:
-        pass
-    return snapshot
-
-
-# fastapi Depends import
-from fastapi import Depends  # noqa: E402 — appended to existing module
