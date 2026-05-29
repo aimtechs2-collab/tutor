@@ -407,3 +407,13 @@ async def admin_user_memory(
         return snapshot
     finally:
         reset_current_user(token)
+
+
+@router.get("/admin/audit")
+async def admin_audit_log(
+    limit: int = 100,
+    _: Any = Depends(require_admin),
+) -> list[dict[str, Any]]:
+    """Recent admin actions from the audit trail."""
+    from aimtutor.multi_user.audit import get_audit_log
+    return get_audit_log(limit=limit)

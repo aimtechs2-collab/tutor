@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { usePathname, useRouter } from "next/navigation";
+import { LayoutDashboard, usePathname, useRouter } from "next/navigation";
 import { type ReactNode } from "react";
 import { TextLogo } from "@/components/brand/TextLogo";
 import { useAppShell } from "@/context/AppShellContext";
@@ -35,6 +35,12 @@ interface NavEntry {
 }
 
 const PRIMARY_NAV: NavEntry[] = [
+  {
+    href: "/dashboard",
+    label: "Dashboard",
+    icon: LayoutDashboard,
+    tooltipKey: "Dashboard",
+  },
   {
     href: "/chat",
     label: "Chat",

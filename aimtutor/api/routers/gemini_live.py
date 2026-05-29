@@ -242,6 +242,9 @@ async def voice_session(
                     turns=transcript_turns,
                     duration=duration,
                 )
+        # Log estimated cost
+        with suppress(Exception):
+            _log_cost(user_id=user_id, duration=duration)
 
 
 # ── proxy session ─────────────────────────────────────────────────────────
@@ -294,6 +297,8 @@ async def _proxy_session(
         setup_payload["setup"]["generation_config"]["enable_affective_dialog"] = True
 
     last_activity: list[float] = [time.monotonic()]
+    model_audio_secs: list[float] = [0.0]
+    user_audio_secs: list[float] = [0.0]
 
     async with _ws.connect(gemini_url) as gemini_ws:
         # Send setup
@@ -345,6 +350,9 @@ async def _proxy_session(
                     continue
                 t = msg.get("type", "")
                 if t == "audio_chunk":
+                    import base64 as _b64
+                    _chunk_bytes = len(_b64.b64decode(msg["data"] + "=="))
+                    user_audio_secs[0] += _chunk_bytes / 2 / 16000
                     await gemini_ws.send(json.dumps({
                         "realtime_input": {
                             "media_chunks": [{
@@ -392,6 +400,9 @@ async def _proxy_session(
                 for part in model_turn.get("parts", []):
                     inline = part.get("inlineData", {})
                     if inline.get("data"):
+                        import base64 as _b64m
+                        _mbytes = len(_b64m.b64decode(inline["data"] + "=="))
+                        model_audio_secs[0] += _mbytes / 2 / 24000
                         await ws.send_json({"type": "audio_chunk", "data": inline["data"]})
                     elif part.get("text"):
                         text = part["text"]
@@ -449,6 +460,24 @@ async def _proxy_session(
 
 # ── helpers ───────────────────────────────────────────────────────────────
 
+def _sanitize_instruction(text: str) -> str:
+    """Strip prompt-injection patterns from user-controlled content."""
+    import re
+    if not text:
+        return ""
+    for pattern in [
+        r"(?i)ignore\s+(previous|above|all)\s+instructions?",
+        r"(?i)you\s+are\s+now\s+",
+        r"(?i)new\s+system\s+prompt",
+        r"(?i)disregard\s+",
+        r"(?i)forget\s+everything",
+        r"(?i)override\s+",
+    ]:
+        text = re.sub(pattern, "[removed]", text)
+    # Cap length to stay within Gemini system instruction limits (~28k chars)
+    return text[:28000]
+
+
 async def _build_system_instruction(session_id: str | None) -> str:
     lines = [
         "You are an expert AI tutor in a live voice session. "
@@ -471,7 +500,7 @@ async def _build_system_instruction(session_id: str | None) -> str:
                     lines.append("\nRecent conversation context:\n" + "\n".join(context))
         except Exception as exc:
             logger.debug("gemini_live: could not load session context: %s", exc)
-    return "\n".join(lines)
+    return _sanitize_instruction("\n".join(lines))
 
 
 def _build_tool_declarations(kb_name: str | None) -> list[dict[str, Any]]:
@@ -531,6 +560,30 @@ async def _dispatch_tool(
     except Exception as exc:
         logger.warning("gemini_live tool '%s' failed: %s", name, exc)
         return f"Tool execution failed: {exc}"
+
+
+
+def _log_cost(*, user_id: str, duration: float) -> None:
+    """Write estimated session cost to audit log."""
+    import datetime
+    # Gemini 2.0 Flash Live pricing (verify at ai.google.dev/pricing)
+    INPUT_RATE_PER_MIN = 0.35   # USD per minute audio input
+    OUTPUT_RATE_PER_MIN = 1.50  # USD per minute audio output
+    # Conservative estimate: half duration input, half output
+    estimated_cost = (duration / 60) * (INPUT_RATE_PER_MIN + OUTPUT_RATE_PER_MIN) / 2
+    try:
+        from aimtutor.multi_user.audit import log_usage
+        log_usage(
+            action="gemini_live_voice",
+            user_id=user_id,
+            summary={
+                "duration_seconds": round(duration, 1),
+                "estimated_cost_usd": round(estimated_cost, 4),
+                "capability": "voice",
+            },
+        )
+    except Exception as exc:
+        logger.debug("gemini_live: cost log failed (non-fatal): %s", exc)
 
 
 async def _flush_to_memory(
