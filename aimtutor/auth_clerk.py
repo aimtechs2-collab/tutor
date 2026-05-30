@@ -6,9 +6,12 @@ the existing local/Postgres auth flow remains the source of truth.
 
 from __future__ import annotations
 
+import asyncio
+import base64
 from dataclasses import dataclass
 from functools import lru_cache
 import json
+import logging
 import os
 from pathlib import Path
 import time
@@ -20,6 +23,9 @@ from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from jose import JWTError, jwt
 
 CLERK_JWKS_URL = "https://api.clerk.com/v1/jwks"
+logger = logging.getLogger(__name__)
+
+
 def _clerk_requested() -> bool:
     return os.environ.get("AUTH_PROVIDER", "").strip().lower() == "clerk"
 
@@ -37,6 +43,30 @@ class _JwksCache:
 
 
 _jwks_cache: _JwksCache | None = None
+_jwks_lock = asyncio.Lock()
+
+
+def _clerk_frontend_api_host() -> str | None:
+    explicit = os.environ.get("CLERK_FRONTEND_API", "").strip()
+    if explicit:
+        return explicit.replace("https://", "").replace("http://", "").rstrip("/")
+    publishable = os.environ.get("NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY", "").strip()
+    if publishable.count("_") >= 2:
+        try:
+            return base64.b64decode(publishable.split("_", 2)[2]).decode().rstrip("$")
+        except Exception:
+            pass
+    return None
+
+
+def _jwks_fetch_targets() -> list[tuple[str, bool]]:
+    """Return (url, use_bearer_auth) pairs, instance JWKS first."""
+    targets: list[tuple[str, bool]] = []
+    host = _clerk_frontend_api_host()
+    if host:
+        targets.append((f"https://{host}/.well-known/jwks.json", False))
+    targets.append((CLERK_JWKS_URL, True))
+    return targets
 
 
 async def get_clerk_jwks() -> dict[str, Any]:
@@ -45,19 +75,38 @@ async def get_clerk_jwks() -> dict[str, Any]:
     if _jwks_cache and _jwks_cache.expires_at > now:
         return _jwks_cache.payload
 
-    secret = os.environ.get("CLERK_SECRET_KEY")
-    if not secret:
-        raise RuntimeError("CLERK_SECRET_KEY is not configured")
+    async with _jwks_lock:
+        now = time.time()
+        if _jwks_cache and _jwks_cache.expires_at > now:
+            return _jwks_cache.payload
 
-    async with httpx.AsyncClient(timeout=10) as client:
-        response = await client.get(
-            CLERK_JWKS_URL,
-            headers={"Authorization": f"Bearer {secret}"},
-        )
-        response.raise_for_status()
-        payload = response.json()
-    _jwks_cache = _JwksCache(payload=payload, expires_at=now + _JWKS_TTL_SECONDS)
-    return payload
+        secret = os.environ.get("CLERK_SECRET_KEY")
+        if not secret:
+            raise RuntimeError("CLERK_SECRET_KEY is not configured")
+
+        last_error: Exception | None = None
+        async with httpx.AsyncClient(timeout=20) as client:
+            for url, use_bearer in _jwks_fetch_targets():
+                headers = (
+                    {"Authorization": f"Bearer {secret}"} if use_bearer else None
+                )
+                try:
+                    response = await client.get(url, headers=headers)
+                    response.raise_for_status()
+                    payload = response.json()
+                    _jwks_cache = _JwksCache(
+                        payload=payload, expires_at=now + _JWKS_TTL_SECONDS
+                    )
+                    return payload
+                except Exception as exc:
+                    last_error = exc
+                    logger.warning("Clerk JWKS fetch failed for %s: %s", url, exc)
+
+        if _jwks_cache:
+            logger.warning("Using stale Clerk JWKS cache after fetch failures")
+            return _jwks_cache.payload
+
+        raise RuntimeError("Failed to fetch Clerk JWKS") from last_error
 
 
 def _role_from_claims(claims: dict[str, Any]) -> str:

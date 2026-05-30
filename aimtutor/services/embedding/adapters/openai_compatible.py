@@ -117,6 +117,27 @@ class OpenAICompatibleEmbeddingAdapter(BaseEmbeddingAdapter):
     _RETRY_BACKOFF = 1.0
     _RATE_LIMIT_BACKOFF = 5.0
 
+    @classmethod
+    def _clamp_dimensions(cls, model_name: str | None, dim_value: int | None) -> int | None:
+        """Map catalog dimensions to a value the model actually supports."""
+        if not dim_value or not model_name:
+            return dim_value
+        info = cls.MODELS_INFO.get(model_name)
+        if info is None:
+            return dim_value
+        if isinstance(info, int):
+            return min(dim_value, info)
+        supported = info.get("dimensions") or []
+        default = info.get("default")
+        if dim_value in supported:
+            return dim_value
+        if supported:
+            valid = [d for d in supported if d <= dim_value]
+            if valid:
+                return max(valid)
+            return int(default) if default else dim_value
+        return int(default) if default else dim_value
+
     def _should_send_dimensions(self, model_name: str | None) -> bool:
         """Decide whether to attach `dimensions` to the request payload.
 
@@ -177,7 +198,7 @@ class OpenAICompatibleEmbeddingAdapter(BaseEmbeddingAdapter):
         # litellm gateway) return HTTP 400 if we send it.
         dim_value = request.dimensions or self.dimensions
         if dim_value and self._should_send_dimensions(model):
-            payload["dimensions"] = dim_value
+            payload["dimensions"] = self._clamp_dimensions(model, int(dim_value))
 
         # URL transparency: hit `base_url` verbatim. Azure's `?api-version=...`
         # is a query param (not a path component) so we still append it.

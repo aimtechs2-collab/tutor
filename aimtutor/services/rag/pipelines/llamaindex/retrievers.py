@@ -31,6 +31,14 @@ def _bm25_persist_dir(storage_dir: Path) -> Path:
     return storage_dir / BM25_PERSIST_DIRNAME
 
 
+def _clamp_top_k(top_k: int, max_nodes: int | None) -> int:
+    """BM25 fails when k exceeds corpus size — clamp to available nodes."""
+    requested = max(1, int(top_k))
+    if max_nodes and max_nodes > 0:
+        return min(requested, max_nodes)
+    return requested
+
+
 def _set_similarity_top_k(retriever: Any, top_k: int) -> Any:
     if hasattr(retriever, "similarity_top_k"):
         retriever.similarity_top_k = top_k
@@ -100,22 +108,29 @@ def build_retriever(
     storage_dir: Path,
     *,
     top_k: int = 5,
+    max_nodes: int | None = None,
     config: RetrievalConfig | None = None,
 ) -> Any:
     """Compose the retrieval stack from official LlamaIndex retrievers."""
-    top_k = max(1, int(top_k))
+    top_k = _clamp_top_k(top_k, max_nodes)
     retrieval_config = config or retrieval_config_from_env()
     if retrieval_config.profile == VECTOR_PROFILE:
         return index.as_retriever(similarity_top_k=top_k)
 
-    bm25_top_k = retrieval_config.candidate_top_k(top_k, retrieval_config.bm25_top_k_multiplier)
+    bm25_top_k = _clamp_top_k(
+        retrieval_config.candidate_top_k(top_k, retrieval_config.bm25_top_k_multiplier),
+        max_nodes,
+    )
     bm25_retriever = build_bm25_retriever(index, storage_dir, top_k=bm25_top_k)
     if bm25_retriever is None:
         return index.as_retriever(similarity_top_k=top_k)
 
     if retrieval_config.profile == HYBRID_PROFILE:
-        vector_top_k = retrieval_config.candidate_top_k(
-            top_k, retrieval_config.vector_top_k_multiplier
+        vector_top_k = _clamp_top_k(
+            retrieval_config.candidate_top_k(
+                top_k, retrieval_config.vector_top_k_multiplier
+            ),
+            max_nodes,
         )
         vector_retriever = index.as_retriever(similarity_top_k=vector_top_k)
         return QueryFusionRetriever(

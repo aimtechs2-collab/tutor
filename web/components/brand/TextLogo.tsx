@@ -35,10 +35,10 @@ export function TextLogo({ compact = false, className = "" }: TextLogoProps) {
   return (
     <span
       aria-hidden="true"
-      className={`inline-flex items-baseline font-sans text-[22px] font-extrabold leading-none tracking-normal ${className}`}
+      className={`inline-flex shrink-0 items-baseline whitespace-nowrap font-sans text-[22px] font-extrabold leading-none tracking-normal ${className}`}
     >
       {FULL_PARTS.map((part) => (
-        <span key={part.text} className={part.className}>
+        <span key={part.text} className={`shrink-0 ${part.className}`}>
           {part.text}
         </span>
       ))}

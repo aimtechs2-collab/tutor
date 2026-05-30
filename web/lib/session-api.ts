@@ -174,6 +174,44 @@ export async function updateSessionTitle(
   return data.session;
 }
 
+export async function persistLiveTranscript(
+  sessionId: string,
+  turns: Array<{ role: "user" | "model"; text: string }>,
+): Promise<{ session_id: string; count: number }> {
+  const body = JSON.stringify({
+    turns: turns.map((t) => ({
+      role: t.role,
+      text: t.text,
+    })),
+  });
+  const paths = [
+    `/api/v1/sessions/${sessionId}/live-transcript`,
+    `/api/v1/gemini-live/transcript/${sessionId}`,
+  ];
+
+  let response: Response | null = null;
+  for (const path of paths) {
+    response = await apiFetch(apiUrl(path), {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body,
+    });
+    if (response.status !== 404) break;
+  }
+
+  if (!response || response.status === 404) {
+    throw new Error(
+      "Live transcript could not be saved (API endpoint missing). Stop the app with Ctrl+C, then run `aimtutor start` again to load the latest backend.",
+    );
+  }
+  const data = await expectJson<{
+    session_id: string;
+    count: number;
+  }>(response);
+  invalidateClientCache("sessions:");
+  return data;
+}
+
 export async function deleteSession(sessionId: string): Promise<void> {
   const response = await apiFetch(apiUrl(`/api/v1/sessions/${sessionId}`), {
     method: "DELETE",

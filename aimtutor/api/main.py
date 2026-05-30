@@ -205,6 +205,8 @@ async def lifespan(app: FastAPI):
         logger.warning(f"Failed to stop EventBus: {e}")
 
 
+# Live transcript: POST /api/v1/sessions/{id}/live-transcript and
+# POST /api/v1/gemini-live/transcript/{id}
 app = FastAPI(
     title="AIMTutor API",
     version="1.0.0",

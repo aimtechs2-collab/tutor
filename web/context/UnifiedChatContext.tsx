@@ -219,7 +219,13 @@ type Action =
       key: string;
       selectedBranches: Record<string, number>;
     }
-  | { type: "BUMP_SIDEBAR_REFRESH" };
+  | { type: "BUMP_SIDEBAR_REFRESH" }
+  | {
+      type: "APPEND_LIVE_TRANSCRIPT";
+      key: string;
+      sessionId: string;
+      turns: Array<{ role: "user" | "model"; text: string }>;
+    };
 
 function createSessionEntry(
   key: string,
@@ -657,6 +663,45 @@ function reducer(state: ProviderState, action: Action): ProviderState {
         ...state,
         sidebarRefreshToken: state.sidebarRefreshToken + 1,
       };
+    case "APPEND_LIVE_TRANSCRIPT": {
+      const session =
+        state.sessions[action.key] ??
+        createSessionEntry(action.key, action.sessionId);
+      const appended: MessageItem[] = [];
+      let parentId: number | null =
+        session.messages.length > 0
+          ? (session.messages[session.messages.length - 1]?.id ?? null)
+          : null;
+      for (const turn of action.turns) {
+        const text = turn.text.trim();
+        if (!text || text === "__GREET_USER__") continue;
+        const role = turn.role === "user" ? "user" : "assistant";
+        const id = -Date.now() - appended.length;
+        appended.push({
+          id,
+          role,
+          content: text,
+          capability: "live_voice",
+          events: [],
+          parentMessageId: parentId,
+        });
+        parentId = id;
+      }
+      if (!appended.length) return state;
+      return {
+        ...state,
+        selectedKey: action.key,
+        sessions: {
+          ...state.sessions,
+          [action.key]: {
+            ...session,
+            sessionId: action.sessionId || session.sessionId,
+            messages: [...session.messages, ...appended],
+            updatedAt: Date.now(),
+          },
+        },
+      };
+    }
     case "NEW_SESSION": {
       const MAX_CACHED_SESSIONS = 20;
       let nextSessions = {
@@ -742,6 +787,11 @@ interface ChatContextValue {
   renameSessionTitle: (title: string) => Promise<void>;
   newSession: () => void;
   loadSession: (sessionId: string) => Promise<void>;
+  /** When the live-transcript API is unavailable, still show turns in chat. */
+  appendLiveTranscriptLocally: (
+    sessionId: string,
+    turns: Array<{ role: "user" | "model"; text: string }>,
+  ) => void;
   selectedSessionId: string | null;
   sessionStatuses: Record<string, SessionStatusSnapshot>;
   sidebarRefreshToken: number;
@@ -1195,10 +1245,13 @@ export function UnifiedChatProvider({
   );
 
   const sendThroughRunner = useCallback(
-    function dispatchToRunner(key: string, msg: ChatMessage, attempt = 0) {
+    async function dispatchToRunner(key: string, msg: ChatMessage, attempt = 0) {
       const runner = ensureRunner(key);
-      if (!runner.client.connected) {
-        if (attempt >= 10) {
+      const connected = await runner.client.waitUntilConnected(
+        attempt === 0 ? 12_000 : 3_000,
+      );
+      if (!connected) {
+        if (attempt >= 5) {
           console.error("WebSocket failed to connect after retries");
           dispatch({ type: "STREAM_END", key, status: "failed" });
           // Surfaces the dead-after-N-retries case (different code path
@@ -1214,8 +1267,8 @@ export function UnifiedChatProvider({
         }
         const timerId = setTimeout(() => {
           retryTimersRef.current.delete(timerId);
-          dispatchToRunner(key, msg, attempt + 1);
-        }, 200);
+          void dispatchToRunner(key, msg, attempt + 1);
+        }, 500);
         retryTimersRef.current.add(timerId);
         return;
       }
@@ -1691,6 +1744,30 @@ export function UnifiedChatProvider({
     dispatch({ type: "NEW_SESSION", key: makeDraftKey() });
   }, [makeDraftKey]);
 
+  const appendLiveTranscriptLocally = useCallback(
+    (
+      sessionId: string,
+      turns: Array<{ role: "user" | "model"; text: string }>,
+    ) => {
+      const currentState = stateRef.current;
+      const key = currentState.selectedKey || makeDraftKey();
+      dispatch({
+        type: "APPEND_LIVE_TRANSCRIPT",
+        key,
+        sessionId,
+        turns,
+      });
+      if (!currentState.sessions[key]?.sessionId) {
+        dispatch({
+          type: "BIND_SERVER_SESSION",
+          key,
+          sessionId,
+        });
+      }
+    },
+    [makeDraftKey],
+  );
+
   const editMessage = useCallback(
     async (messageId: number, newContent: string) => {
       const trimmed = newContent.trim();
@@ -1836,6 +1913,7 @@ export function UnifiedChatProvider({
       renameSessionTitle,
       newSession,
       loadSession,
+      appendLiveTranscriptLocally,
       selectedSessionId: derivedState.sessionId,
       sessionStatuses,
       sidebarRefreshToken: state.sidebarRefreshToken,
@@ -1857,6 +1935,7 @@ export function UnifiedChatProvider({
       renameSessionTitle,
       newSession,
       loadSession,
+      appendLiveTranscriptLocally,
       sessionStatuses,
       state.sidebarRefreshToken,
     ],

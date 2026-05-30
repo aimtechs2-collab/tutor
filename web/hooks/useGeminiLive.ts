@@ -1,21 +1,23 @@
 "use client";
 
 /**
- * useGeminiLive — manages a full Gemini Live real-time voice session.
- *
- * Lifecycle:
- *   idle → connecting → listening ↔ speaking → idle
- *
- * Audio flow:
- *   Mic → AudioWorklet (or ScriptProcessorNode fallback) → 16 kHz Int16 PCM
- *   → base64 → WS → backend proxy → Gemini Live
- *   Gemini Live → backend proxy → WS → base64 → 24 kHz PCM → AudioContext queue
+ * useGeminiLive — direct Gemini Live WebSocket (MyTutor /teacher parity).
+ * No localhost proxy; audio goes browser ↔ Google with ephemeral token from API.
  */
 
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { wsUrl, apiFetch, apiUrl } from "@/lib/api";
-
-// ── types ──────────────────────────────────────────────────────────────────
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type RefObject,
+} from "react";
+import { apiFetch, apiUrl } from "@/lib/api";
+import { AudioPlayer } from "@/lib/gemini/AudioPlayer";
+import { AudioStreamer } from "@/lib/gemini/AudioStreamer";
+import { GeminiLiveClient } from "@/lib/gemini/GeminiLiveClient";
+import { VideoStreamer, type VideoSource } from "@/lib/gemini/VideoStreamer";
 
 export type VoiceStatus =
   | "idle"
@@ -35,300 +37,289 @@ export interface GeminiLiveConfig {
   voice?: string;
   sessionId?: string;
   kbName?: string;
-  enableVideo?: boolean;
-  enableAffectiveDialog?: boolean;
   proactivePrompt?: string;
 }
 
 export interface GeminiLiveHook {
   status: VoiceStatus;
   transcript: TranscriptTurn[];
+  activeModel: string | null;
   error: string | null;
   isSupported: boolean;
+  videoSource: VideoSource | null;
+  videoPreviewRef: RefObject<HTMLVideoElement | null>;
   startSession: (config?: GeminiLiveConfig) => Promise<void>;
   stopSession: () => void;
+  startVideo: (source: VideoSource, captureFps?: number) => Promise<void>;
+  stopVideo: () => void;
   interrupt: () => void;
   sendText: (text: string) => void;
   clearTranscript: () => void;
 }
 
-// ── helpers ────────────────────────────────────────────────────────────────
+const DEFAULT_LIVE_MODEL = "gemini-3.1-flash-live-preview";
+const MAX_RECONNECT = 3;
+/** MyTutor /teacher: hidden warmup turn so the first real user speech is not model-cold. */
+const LIVE_GREET_SIGNAL = "__GREET_USER__";
+const LIVE_GREET_DELAY_MS = 700;
 
-function base64ToArrayBuffer(b64: string): ArrayBuffer {
-  const bin = atob(b64);
-  const buf = new Uint8Array(bin.length);
-  for (let i = 0; i < bin.length; i++) buf[i] = bin.charCodeAt(i);
-  return buf.buffer;
+function isHiddenLiveSignal(text: string): boolean {
+  return text.trim() === LIVE_GREET_SIGNAL;
 }
 
-function arrayBufferToBase64(buf: ArrayBufferLike): string {
-  const bytes = new Uint8Array(buf);
-  let bin = "";
-  for (let i = 0; i < bytes.byteLength; i++) bin += String.fromCharCode(bytes[i]);
-  return btoa(bin);
+function appendTranscriptTurn(
+  prev: TranscriptTurn[],
+  role: "user" | "model",
+  text: string,
+): TranscriptTurn[] {
+  const trimmed = text.trim();
+  if (!trimmed) return prev;
+  const last = prev[prev.length - 1];
+  if (last && last.role === role && Date.now() - last.ts < 15_000) {
+    const merged =
+      trimmed.length >= last.text.length &&
+      trimmed.startsWith(last.text.slice(0, Math.min(last.text.length, 32)))
+        ? trimmed
+        : `${last.text} ${trimmed}`.trim();
+    return [...prev.slice(0, -1), { role, text: merged, ts: Date.now() }];
+  }
+  return [...prev, { role, text: trimmed, ts: Date.now() }];
 }
 
-// ── hook ───────────────────────────────────────────────────────────────────
+function buildRecentContext(turns: TranscriptTurn[]): string {
+  return turns
+    .slice(-12)
+    .map((t) => `${t.role === "user" ? "Student" : "Tutor"}: ${t.text}`)
+    .join("\n");
+}
 
 export function useGeminiLive(): GeminiLiveHook {
   const [status, setStatus] = useState<VoiceStatus>("idle");
   const [transcript, setTranscript] = useState<TranscriptTurn[]>([]);
+  const [activeModel, setActiveModel] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
 
-  const wsRef = useRef<WebSocket | null>(null);
-  const audioCtxRef = useRef<AudioContext | null>(null);
-  const streamRef = useRef<MediaStream | null>(null);
-  const workletNodeRef = useRef<AudioWorkletNode | null>(null);
-  const scriptNodeRef = useRef<ScriptProcessorNode | null>(null);
-  const audioQueueRef = useRef<AudioBuffer[]>([]);
-  const nextStartRef = useRef<number>(0);
-  const reconnectAttemptsRef = useRef(0);
-  const stopRequestedRef = useRef(false);
+  const clientRef = useRef<GeminiLiveClient | null>(null);
+  const streamerRef = useRef<AudioStreamer | null>(null);
+  const videoStreamerRef = useRef<VideoStreamer | null>(null);
+  const videoPreviewRef = useRef<HTMLVideoElement | null>(null);
+  const playerRef = useRef<AudioPlayer | null>(null);
+  const [videoSource, setVideoSource] = useState<VideoSource | null>(null);
+  const transcriptRef = useRef<TranscriptTurn[]>([]);
   const configRef = useRef<GeminiLiveConfig>({});
-  const tokenRefreshTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const stopRequestedRef = useRef(false);
+  const reconnectAttemptsRef = useRef(0);
+  const resumptionHandleRef = useRef<string | null>(null);
+  const connectInFlightRef = useRef(false);
+  const liveGreetSentRef = useRef(false);
+  const videoSourceRef = useRef<VideoSource | null>(null);
 
-  // ── support detection (stable, no deps) ────────────────────────────────
   const isSupported = useMemo(() => {
     if (typeof window === "undefined") return false;
     return (
       typeof WebSocket !== "undefined" &&
       !!navigator?.mediaDevices?.getUserMedia &&
-      !!(window.AudioContext || (window as any).webkitAudioContext) &&
+      !!navigator?.mediaDevices?.getDisplayMedia &&
+      !!(window.AudioContext || (window as Window & { webkitAudioContext?: typeof AudioContext }).webkitAudioContext) &&
       window.isSecureContext
     );
   }, []);
 
-  // ── audio playback ─────────────────────────────────────────────────────
-  const scheduleAudio = useCallback((pcm24khz: ArrayBuffer) => {
-    const ctx = audioCtxRef.current;
-    if (!ctx) return;
-    try {
-      const SAMPLE_RATE = 24000;
-      const int16 = new Int16Array(pcm24khz);
-      const float32 = new Float32Array(int16.length);
-      for (let i = 0; i < int16.length; i++) float32[i] = int16[i] / 32768;
-      const buf = ctx.createBuffer(1, float32.length, SAMPLE_RATE);
-      buf.copyToChannel(float32, 0);
-      audioQueueRef.current.push(buf);
-
-      // Play next buffer in sequence
-      const playNext = () => {
-        const next = audioQueueRef.current.shift();
-        if (!next || !audioCtxRef.current) return;
-        const source = audioCtxRef.current.createBufferSource();
-        source.buffer = next;
-        source.connect(audioCtxRef.current.destination);
-        const start = Math.max(audioCtxRef.current.currentTime, nextStartRef.current);
-        source.start(start);
-        nextStartRef.current = start + next.duration;
-        source.onended = () => {
-          if (audioQueueRef.current.length > 0) playNext();
-          else setStatus((s) => (s === "speaking" ? "listening" : s));
-        };
-        setStatus("speaking");
-      };
-
-      if (audioQueueRef.current.length === 1) playNext();
-    } catch {
-      // Non-fatal — audio chunk dropped
+  const stopVideo = useCallback(() => {
+    videoStreamerRef.current?.stop();
+    videoStreamerRef.current = null;
+    if (videoPreviewRef.current) {
+      videoPreviewRef.current.srcObject = null;
     }
+    setVideoSource(null);
   }, []);
 
-  // ── WS message handler ─────────────────────────────────────────────────
-  const handleMessage = useCallback(
-    (raw: string) => {
-      let msg: Record<string, any>;
-      try {
-        msg = JSON.parse(raw);
-      } catch {
+  const addTranscript = useCallback((role: "user" | "model", text: string) => {
+    if (role === "user" && isHiddenLiveSignal(text)) return;
+    transcriptRef.current = appendTranscriptTurn(transcriptRef.current, role, text);
+    setTranscript([...transcriptRef.current]);
+  }, []);
+
+  const tearDown = useCallback((opts?: { keepVideo?: boolean }) => {
+    if (!opts?.keepVideo) {
+      stopVideo();
+    }
+    streamerRef.current?.stop();
+    streamerRef.current = null;
+    playerRef.current?.destroy();
+    playerRef.current = null;
+    clientRef.current?.disconnect();
+    clientRef.current = null;
+  }, [stopVideo]);
+
+  const startVideo = useCallback(
+    async (source: VideoSource, captureFps?: number) => {
+      if (!clientRef.current) {
+        setError("Start Live before sharing camera or screen.");
         return;
       }
-      switch (msg.type) {
-        case "audio_chunk":
-          scheduleAudio(base64ToArrayBuffer(msg.data));
-          break;
-        case "transcript":
-          setTranscript((prev) => [
-            ...prev,
-            { role: msg.role, text: msg.text, ts: Date.now() },
-          ]);
-          break;
-        case "turn_complete":
-          setStatus("listening");
-          break;
-        case "tool_start":
-          // Could show a "searching…" indicator — for now just log
-          console.debug("[GeminiLive] tool_start:", msg.tool);
-          break;
-        case "tool_done":
-          console.debug("[GeminiLive] tool_done:", msg.tool);
-          break;
-        case "info":
-          console.info("[GeminiLive] info:", msg.message);
-          break;
-        case "ping":
-          wsRef.current?.send(JSON.stringify({ type: "pong" }));
-          break;
-        case "error":
-          setError(msg.message || "Session error");
-          setStatus("error");
-          break;
+      const fps = captureFps ?? 1;
+      try {
+        stopVideo();
+        const streamer = new VideoStreamer();
+        await streamer.start(
+          source,
+          (frame) => clientRef.current?.sendImage(frame),
+          videoPreviewRef.current,
+          fps,
+          () => {
+            videoSourceRef.current = null;
+            setVideoSource(null);
+          },
+        );
+        videoStreamerRef.current = streamer;
+        videoSourceRef.current = source;
+        setVideoSource(source);
+        setError(null);
+      } catch (err) {
+        stopVideo();
+        setError(err instanceof Error ? err.message : "Could not start video");
       }
     },
-    [scheduleAudio],
+    [stopVideo],
   );
 
-  // ── mic capture ────────────────────────────────────────────────────────
-  const startMicCapture = useCallback(
-    async (ctx: AudioContext, stream: MediaStream) => {
-      const sourceNode = ctx.createMediaStreamSource(stream);
-      let workletSupported = false;
+  const connectLive = useCallback(
+    async (cfg: GeminiLiveConfig, startMic: boolean) => {
+      if (connectInFlightRef.current) return;
+      connectInFlightRef.current = true;
+      const voice = cfg.voice ?? "Aoede";
 
       try {
-        await ctx.audioWorklet.addModule("/audio-processor.worklet.js");
-        workletSupported = true;
-      } catch {
-        console.warn("[GeminiLive] AudioWorklet unavailable, using ScriptProcessor");
-      }
-
-      const sendChunk = (int16: Int16Array) => {
-        if (wsRef.current?.readyState === WebSocket.OPEN) {
-          wsRef.current.send(
-            JSON.stringify({
-              type: "audio_chunk",
-              data: arrayBufferToBase64(int16.buffer),
-            }),
-          );
-        }
-      };
-
-      if (workletSupported) {
-        const worklet = new AudioWorkletNode(ctx, "pcm-downsample-processor", {
-          processorOptions: { inputSampleRate: ctx.sampleRate },
+        playerRef.current?.destroy();
+        const player = new AudioPlayer();
+        const tokenPromise = apiFetch(apiUrl("/api/v1/gemini-live/token"), {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            voice,
+            session_id: cfg.sessionId,
+            recent_context: buildRecentContext(transcriptRef.current),
+          }),
         });
-        worklet.port.onmessage = (e) => {
-          if (e.data?.type === "pcm_chunk") sendChunk(new Int16Array(e.data.buffer));
+
+        const [, tokenRes] = await Promise.all([player.init(), tokenPromise]);
+        if (!tokenRes.ok) {
+          const err = await tokenRes.json().catch(() => ({}));
+          throw new Error((err as { detail?: string }).detail || `Token failed: ${tokenRes.status}`);
+        }
+        const { token, model } = (await tokenRes.json()) as {
+          token: string;
+          model?: string;
         };
-        sourceNode.connect(worklet);
-        workletNodeRef.current = worklet;
-      } else {
-        const { createScriptProcessorCapture } = await import(
-          "@/lib/audio/scriptProcessorFallback"
-        );
-        scriptNodeRef.current = createScriptProcessorCapture(ctx, sourceNode, sendChunk);
+        const liveModel = model || DEFAULT_LIVE_MODEL;
+        setActiveModel(liveModel);
+        playerRef.current = player;
+
+        const scheduleLiveGreet = () => {
+          if (liveGreetSentRef.current || stopRequestedRef.current) return;
+          if (transcriptRef.current.length > 0) return;
+          if (cfg.proactivePrompt?.trim()) return;
+          liveGreetSentRef.current = true;
+          window.setTimeout(() => {
+            if (!stopRequestedRef.current && clientRef.current) {
+              clientRef.current.sendText(LIVE_GREET_SIGNAL);
+            }
+          }, LIVE_GREET_DELAY_MS);
+        };
+
+        const client = new GeminiLiveClient({
+          onReady: async () => {
+            reconnectAttemptsRef.current = 0;
+            setStatus("listening");
+            if (startMic) {
+              await player.resume();
+              const streamer = new AudioStreamer();
+              await streamer.start((chunk) => clientRef.current?.sendAudio(chunk));
+              streamerRef.current = streamer;
+            }
+            scheduleLiveGreet();
+          },
+          onAudioChunk: (b64) => {
+            playerRef.current?.playChunk(b64);
+            setStatus("speaking");
+          },
+          onInterrupted: () => {
+            playerRef.current?.interrupt();
+            setStatus("listening");
+          },
+          onTurnComplete: () => setStatus("listening"),
+          onInputTranscript: (text) => addTranscript("user", text),
+          onOutputTranscript: (text) => addTranscript("model", text),
+          onResumptionUpdate: (u) => {
+            if (u.newHandle) resumptionHandleRef.current = u.newHandle;
+          },
+          onGoAway: () => {
+            if (!stopRequestedRef.current && reconnectAttemptsRef.current < MAX_RECONNECT) {
+              reconnectAttemptsRef.current += 1;
+              setStatus("reconnecting");
+              tearDown();
+              setTimeout(() => {
+                if (!stopRequestedRef.current) {
+                  void connectLive(cfg, true);
+                }
+              }, 2000);
+            }
+          },
+          onError: (err) => {
+            if (!stopRequestedRef.current) {
+              setError(err.message);
+              setStatus("error");
+            }
+          },
+          onClose: (info) => {
+            if (stopRequestedRef.current) return;
+            if (
+              reconnectAttemptsRef.current < MAX_RECONNECT &&
+              resumptionHandleRef.current &&
+              info.code !== 1000
+            ) {
+              reconnectAttemptsRef.current += 1;
+              setStatus("reconnecting");
+              tearDown({ keepVideo: !!videoSourceRef.current });
+              setTimeout(() => {
+                if (!stopRequestedRef.current) void connectLive(cfg, true);
+              }, 500);
+            }
+          },
+        });
+
+        clientRef.current = client;
+        await client.connect(token, {
+          model: liveModel,
+          voiceName: voice,
+          sessionResumptionHandle: resumptionHandleRef.current,
+        });
+      } finally {
+        connectInFlightRef.current = false;
       }
     },
-    [],
+    [addTranscript, tearDown],
   );
 
-  // ── cleanup ────────────────────────────────────────────────────────────
-  const cleanup = useCallback(() => {
-    if (tokenRefreshTimerRef.current) {
-      clearTimeout(tokenRefreshTimerRef.current);
-      tokenRefreshTimerRef.current = null;
-    }
-    workletNodeRef.current?.port.postMessage({ type: "stop" });
-    workletNodeRef.current?.disconnect();
-    workletNodeRef.current = null;
-    scriptNodeRef.current?.disconnect();
-    scriptNodeRef.current = null;
-    streamRef.current?.getTracks().forEach((t) => t.stop());
-    streamRef.current = null;
-    audioQueueRef.current = [];
-    nextStartRef.current = 0;
-    audioCtxRef.current?.close().catch(() => {});
-    audioCtxRef.current = null;
-    if (wsRef.current) {
-      wsRef.current.onclose = null;
-      wsRef.current.close(1000);
-      wsRef.current = null;
-    }
-  }, []);
-
-  // ── open WS session ────────────────────────────────────────────────────
-  const openSession = useCallback(
-    async (token: string, expiresAt: string, cfg: GeminiLiveConfig) => {
-      const params = new URLSearchParams({ token });
-      if (cfg.sessionId) params.set("session_id", cfg.sessionId);
-      if (cfg.kbName) params.set("kb", cfg.kbName);
-      if (cfg.enableVideo) params.set("enable_video", "1");
-      if (cfg.proactivePrompt) params.set("proactive_prompt", cfg.proactivePrompt);
-
-      const url = wsUrl(`/api/v1/gemini-live/session?${params}`);
-      const ws = new WebSocket(url);
-      wsRef.current = ws;
-
-      ws.onmessage = (e) => handleMessage(e.data);
-      ws.onerror = () => {
-        if (!stopRequestedRef.current) setError("Connection error");
-      };
-      ws.onclose = (e) => {
-        if (stopRequestedRef.current) return;
-        if (e.code === 4001 || e.code === 4003) {
-          setError("Authentication failed");
-          setStatus("error");
-          return;
-        }
-        // Auto-reconnect up to 3 times
-        if (reconnectAttemptsRef.current < 3) {
-          reconnectAttemptsRef.current++;
-          const delay = Math.pow(2, reconnectAttemptsRef.current) * 1000;
-          setStatus("reconnecting");
-          setTimeout(() => {
-            if (!stopRequestedRef.current) startSession(cfg);
-          }, delay);
-        } else {
-          setError("Connection lost after 3 attempts");
-          setStatus("error");
-        }
-      };
-
-      await new Promise<void>((resolve, reject) => {
-        ws.onopen = () => resolve();
-        setTimeout(() => reject(new Error("WS connect timeout")), 10000);
-      });
-
-      // Schedule token refresh 30s before expiry
-      const expiresMs = new Date(expiresAt).getTime() - Date.now() - 30_000;
-      if (expiresMs > 0) {
-        tokenRefreshTimerRef.current = setTimeout(async () => {
-          if (stopRequestedRef.current) return;
-          try {
-            const res = await apiFetch(apiUrl("/api/v1/gemini-live/token"), {
-              method: "POST",
-              headers: { "Content-Type": "application/json" },
-              body: JSON.stringify({ model: "gemini-2.5-flash-native-audio-latest" }),
-            });
-            const data = await res.json();
-            cleanup();
-            await openSession(data.token, data.expires_at, cfg);
-          } catch {
-            // Token refresh failed — session will end naturally
-          }
-        }, expiresMs);
-      }
-    },
-    [cleanup, handleMessage],
-  );
-
-  // ── startSession ───────────────────────────────────────────────────────
   const startSession = useCallback(
     async (cfg: GeminiLiveConfig = {}) => {
       configRef.current = cfg;
       stopRequestedRef.current = false;
       reconnectAttemptsRef.current = 0;
+      liveGreetSentRef.current = false;
 
       if (!window.isSecureContext) {
-        setError("Live Voice requires HTTPS. Please use a secure connection.");
+        setError("Live Voice requires HTTPS.");
         setStatus("error");
         return;
       }
 
       setStatus("connecting");
       setError(null);
+      tearDown();
 
       try {
-        // 1. Check feature enabled
         const cfgRes = await apiFetch(apiUrl("/api/v1/gemini-live/config"));
         const cfgData = await cfgRes.json();
         if (!cfgData.enabled) {
@@ -337,95 +328,68 @@ export function useGeminiLive(): GeminiLiveHook {
           return;
         }
 
-        // 2. Get ephemeral token
-        const tokenRes = await apiFetch(apiUrl("/api/v1/gemini-live/token"), {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            model: cfg.voice
-              ? cfgData.models?.[0]?.id ?? "gemini-2.5-flash-native-audio-latest"
-              : "gemini-2.5-flash-native-audio-latest",
-            voice: cfg.voice ?? "Aoede",
-            enable_affective_dialog: cfg.enableAffectiveDialog ?? false,
-          }),
-        });
-        if (!tokenRes.ok) {
-          const err = await tokenRes.json().catch(() => ({}));
-          throw new Error(err.detail || `Token request failed: ${tokenRes.status}`);
+        await connectLive(cfg, true);
+
+        if (cfg.proactivePrompt?.trim()) {
+          liveGreetSentRef.current = true;
+          clientRef.current?.sendText(cfg.proactivePrompt.trim());
         }
-        const { token, expires_at } = await tokenRes.json();
-
-        // 3. Mic access — MUST happen in this user-gesture context
-        let stream: MediaStream;
-        try {
-          stream = await navigator.mediaDevices.getUserMedia({ audio: true, video: false });
-        } catch (e: any) {
-          if (e.name === "NotAllowedError") {
-            throw new Error("Microphone access denied. Please allow mic access and try again.");
-          }
-          throw new Error("No microphone found. Connect a mic and try again.");
-        }
-        streamRef.current = stream;
-
-        // 4. AudioContext — created inside user gesture (iOS Safari requirement)
-        const AudioContextClass =
-          window.AudioContext || (window as any).webkitAudioContext;
-        const ctx = new AudioContextClass();
-        if (ctx.state === "suspended") await ctx.resume();
-        audioCtxRef.current = ctx;
-
-        // 5. Open WS
-        await openSession(token, expires_at, cfg);
-
-        // 6. Start mic capture
-        await startMicCapture(ctx, stream);
-
-        setStatus("listening");
-      } catch (e: any) {
-        cleanup();
-        setError(e.message || "Failed to start session");
+      } catch (e: unknown) {
+        tearDown();
+        setError(e instanceof Error ? e.message : "Failed to start session");
         setStatus("error");
       }
     },
-    [cleanup, openSession, startMicCapture],
+    [connectLive, tearDown],
   );
 
-  // ── stopSession ────────────────────────────────────────────────────────
   const stopSession = useCallback(() => {
     stopRequestedRef.current = true;
-    wsRef.current?.send(JSON.stringify({ type: "end_turn" }));
-    cleanup();
+    tearDown();
     setStatus("idle");
+    setActiveModel(null);
     setError(null);
-  }, [cleanup]);
+  }, [tearDown]);
 
-  // ── interrupt ──────────────────────────────────────────────────────────
   const interrupt = useCallback(() => {
-    wsRef.current?.send(JSON.stringify({ type: "interrupt" }));
-    audioQueueRef.current = [];
-    nextStartRef.current = audioCtxRef.current?.currentTime ?? 0;
+    playerRef.current?.interrupt();
     setStatus("listening");
   }, []);
 
-  // ── sendText ───────────────────────────────────────────────────────────
   const sendText = useCallback((text: string) => {
-    wsRef.current?.send(JSON.stringify({ type: "text", content: text }));
+    const t = text.trim();
+    if (!t) return;
+    if (!isHiddenLiveSignal(t)) addTranscript("user", t);
+    clientRef.current?.sendText(t);
+  }, [addTranscript]);
+
+  const clearTranscript = useCallback(() => {
+    transcriptRef.current = [];
+    setTranscript([]);
+    liveGreetSentRef.current = false;
   }, []);
 
-  const clearTranscript = useCallback(() => setTranscript([]), []);
-
-  // ── cleanup on unmount ─────────────────────────────────────────────────
-  useEffect(() => () => cleanup(), [cleanup]);
+  useEffect(() => () => {
+    stopRequestedRef.current = true;
+    tearDown();
+  }, [tearDown]);
 
   return {
     status,
     transcript,
+    activeModel,
     error,
     isSupported,
+    videoSource,
+    videoPreviewRef,
     startSession,
     stopSession,
+    startVideo,
+    stopVideo,
     interrupt,
     sendText,
     clearTranscript,
   };
 }
+
+export type { VideoSource };

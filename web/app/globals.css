@@ -43,6 +43,8 @@
     --input: #e6decc;
     --ring: #b0501e;
     --overlay: rgba(28, 24, 22, 0.42);
+    --sidebar-recent-active: #ececec;
+    --sidebar-recent-hover: #f0f0f0;
   }
 
   /* Dark — warm near-black, same terracotta family as Cream. */
@@ -68,6 +70,8 @@
     --input: #3a3634;
     --ring: #d4734b;
     --overlay: rgba(0, 0, 0, 0.6);
+    --sidebar-recent-active: #2f2f2f;
+    --sidebar-recent-hover: #2a2a2a;
   }
 
   /* Snow — near-white cool canvas, the cool-family counterpart to Cream.
@@ -96,6 +100,8 @@
     --input: #cdd9e4;
     --ring: #1d4ed8;
     --overlay: rgba(15, 23, 42, 0.42);
+    --sidebar-recent-active: #e8edf2;
+    --sidebar-recent-hover: #f0f4f8;
   }
 
   .theme-snow body {
@@ -127,6 +133,56 @@
     --input: rgba(255, 255, 255, 0.06);
     --ring: #a855f7;
     --overlay: rgba(0, 0, 0, 0.55);
+    --sidebar-recent-active: rgba(255, 255, 255, 0.1);
+    --sidebar-recent-hover: rgba(255, 255, 255, 0.06);
+  }
+
+  /* Opaque profile menu/footer — avoids rgba sidebar tokens bleeding through */
+  .aimtutor-profile-menu,
+  .aimtutor-profile-menu-header,
+  .aimtutor-profile-footer {
+    background-color: var(--card);
+    color: var(--card-foreground);
+  }
+
+  .dark .aimtutor-profile-menu,
+  .dark .aimtutor-profile-menu-header,
+  .dark .aimtutor-profile-footer {
+    background-color: #242220;
+  }
+
+  :root .aimtutor-profile-menu,
+  :root .aimtutor-profile-menu-header,
+  :root .aimtutor-profile-footer,
+  .theme-snow .aimtutor-profile-menu,
+  .theme-snow .aimtutor-profile-menu-header,
+  .theme-snow .aimtutor-profile-footer {
+    background-color: #ffffff;
+  }
+
+  .theme-glass .aimtutor-profile-menu,
+  .theme-glass .aimtutor-profile-menu-header,
+  .theme-glass .aimtutor-profile-footer {
+    background-color: #1a1828;
+  }
+
+  .aimtutor-profile-menu-item:hover {
+    background-color: #ece7d8;
+  }
+
+  .aimtutor-profile-menu-item.is-active {
+    background-color: #ece7d8;
+    font-weight: 500;
+  }
+
+  .dark .aimtutor-profile-menu-item:hover,
+  .dark .aimtutor-profile-menu-item.is-active {
+    background-color: #302d2a;
+  }
+
+  .theme-glass .aimtutor-profile-menu-item:hover,
+  .theme-glass .aimtutor-profile-menu-item.is-active {
+    background-color: rgba(255, 255, 255, 0.1);
   }
 
   .theme-glass body {
@@ -706,6 +762,26 @@
     opacity: 0;
   }
   to {
+    opacity: 1;
+  }
+}
+
+@keyframes live-orb-drift {
+  0%,
+  100% {
+    transform: translate(-8%, 0) scale(1.05);
+  }
+  50% {
+    transform: translate(8%, -4%) scale(1.15);
+  }
+}
+
+@keyframes live-orb-pulse {
+  0%,
+  100% {
+    opacity: 0.65;
+  }
+  50% {
     opacity: 1;
   }
 }

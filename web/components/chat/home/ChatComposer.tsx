@@ -21,10 +21,7 @@ import {
   X,
   type LucideIcon,
 } from "lucide-react";
-import { lazy, Suspense, useState as useVoiceState } from "react";
-import { apiFetch, apiUrl } from "@/lib/api";
-
-const GeminiLivePanel = lazy(() => import("@/components/gemini-live/GeminiLivePanel"));
+import { fetchGeminiLiveConfig } from "@/lib/gemini-live-config";
 import {
   ATTACHMENT_ACCEPT,
   docIconFor,
@@ -144,8 +141,8 @@ export default memo(function ChatComposer({
   onCancelStreaming,
   prefillInputRef,
   inputPlaceholder,
-  sessionId,
-  activeKbName,
+  liveVoiceOpen = false,
+  onLiveVoiceOpenChange,
 }: {
   composerRef: RefObject<HTMLDivElement | null>;
   capMenuRef: RefObject<HTMLDivElement | null>;
@@ -237,10 +234,8 @@ export default memo(function ChatComposer({
   prefillInputRef?: React.MutableRefObject<((text: string) => void) | null>;
   /** Override the composer placeholder (e.g. quiz follow-up). */
   inputPlaceholder?: string;
-  /** Active chat session for Gemini Live voice tutoring. */
-  sessionId?: string | null;
-  /** Primary knowledge base name for voice context. */
-  activeKbName?: string;
+  liveVoiceOpen?: boolean;
+  onLiveVoiceOpenChange?: (open: boolean) => void;
 }) {
   const { t } = useTranslation();
   const CapIcon = activeCap.icon;
@@ -796,12 +791,8 @@ export default memo(function ChatComposer({
 
                 {/* Gemini Live voice button */}
                 <VoiceTutorButton
-<<<<<<< Updated upstream
-                  sessionId={sessionId || undefined}
-=======
-                  sessionId={sessionId ?? undefined}
->>>>>>> Stashed changes
-                  kbName={activeKbName}
+                  open={liveVoiceOpen}
+                  onOpenChange={onLiveVoiceOpenChange}
                 />
                 {isStreaming ? (
                   <button
@@ -861,83 +852,54 @@ export default memo(function ChatComposer({
 // ── VoiceTutorButton ─────────────────────────────────────────────────────
 
 function VoiceTutorButton({
-  sessionId,
-  kbName,
+  open,
+  onOpenChange,
 }: {
-  sessionId?: string;
-  kbName?: string;
+  open: boolean;
+  onOpenChange?: (open: boolean) => void;
 }) {
-  const [open, setOpen] = useVoiceState(false);
-  const [enabled, setEnabled] = useVoiceState<boolean | null>(null);
+  const [enabled, setEnabled] = useState<boolean | null>(null);
 
   useEffect(() => {
     let cancelled = false;
-<<<<<<< Updated upstream
-    apiFetch(apiUrl("/api/v1/gemini-live/config"))
-      .then((r) => (r.ok ? r.json() : Promise.reject()))
-=======
-    fetch("/api/v1/gemini-live/config", { credentials: "include" })
-      .then((r) => r.json())
->>>>>>> Stashed changes
-      .then((d) => {
-        if (!cancelled) setEnabled(Boolean(d.enabled));
-      })
-      .catch(() => {
-        if (!cancelled) setEnabled(false);
-      });
+    void fetchGeminiLiveConfig().then((d) => {
+      if (!cancelled) setEnabled(d.enabled);
+    });
     return () => {
       cancelled = true;
     };
   }, []);
-<<<<<<< Updated upstream
-=======
-
-  if (!enabled) return null;
->>>>>>> Stashed changes
 
   return (
-    <>
-      <button
-        type="button"
-        onClick={() => {
-          if (enabled) setOpen((o) => !o);
-        }}
-        disabled={!enabled}
-        title={
-          enabled === null
-            ? "Checking Gemini Live..."
-            : enabled
-              ? "Live Voice Tutoring (Gemini Live)"
-              : "Gemini Live is not configured"
-        }
-        aria-label="Gemini Live voice tutoring"
-        className={`inline-flex h-[29px] shrink-0 items-center gap-1.5 rounded-full px-2.5 text-[12px] font-medium transition-all disabled:cursor-not-allowed disabled:opacity-55 ${
-          open
-            ? "bg-teal-500/20 text-teal-400 shadow-[0_0_10px_rgba(20,184,166,0.3)]"
-            : enabled
-              ? "bg-teal-500/10 text-teal-600 hover:bg-teal-500/15 hover:text-teal-500"
-              : "bg-[var(--muted)] text-[var(--muted-foreground)]"
-        }`}
-      >
-        <Mic size={15} strokeWidth={2} />
-        <span className="hidden sm:inline">Live</span>
-      </button>
-
-      {enabled && open && (
-        <div
-          className="absolute bottom-full right-0 mb-3 z-50"
-          style={{ filter: "drop-shadow(0 20px 60px rgba(0,0,0,0.5))" }}
-        >
-          <Suspense fallback={null}>
-            <GeminiLivePanel
-              sessionId={sessionId}
-              kbName={kbName}
-              onClose={() => setOpen(false)}
-            />
-          </Suspense>
-        </div>
-      )}
-    </>
+    <button
+      type="button"
+      onClick={() => {
+        if (!enabled || !onOpenChange) return;
+        onOpenChange(!open);
+      }}
+      disabled={!enabled}
+      title={
+        enabled === null
+          ? "Checking Gemini Live..."
+          : enabled
+            ? open
+              ? "End live voice"
+              : "Live voice tutoring"
+            : "Gemini Live is not configured"
+      }
+      aria-label="Gemini Live voice tutoring"
+      aria-pressed={open}
+      className={`inline-flex h-[29px] shrink-0 items-center gap-1.5 rounded-full px-2.5 text-[12px] font-medium transition-all disabled:cursor-not-allowed disabled:opacity-55 ${
+        open
+          ? "bg-teal-500/20 text-teal-400 shadow-[0_0_10px_rgba(20,184,166,0.3)]"
+          : enabled
+            ? "bg-teal-500/10 text-teal-600 hover:bg-teal-500/15 hover:text-teal-500"
+            : "bg-[var(--muted)] text-[var(--muted-foreground)]"
+      }`}
+    >
+      <Mic size={15} strokeWidth={2} />
+      <span className="hidden sm:inline">Live</span>
+    </button>
   );
 }
 

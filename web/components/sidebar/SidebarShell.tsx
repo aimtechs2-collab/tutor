@@ -9,7 +9,6 @@ import {
   BookOpen,
   Bot,
   Brain,
-  Github,
   LayoutGrid,
   Library,
   MessageSquare,
@@ -17,13 +16,12 @@ import {
   PanelLeftOpen,
   PenLine,
   Plus,
-  Settings,
   type LucideIcon,
 } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import SessionList from "@/components/SessionList";
+import { SidebarMoreNav } from "@/components/sidebar/SidebarMoreNav";
 import { TutorBotRecent } from "@/components/sidebar/TutorBotRecent";
-import { VersionBadge } from "@/components/sidebar/VersionBadge";
 import type { SessionSummary } from "@/lib/session-api";
 import { Tooltip } from "@/components/ui/Tooltip";
 
@@ -34,13 +32,8 @@ interface NavEntry {
   tooltipKey?: string;
 }
 
-const PRIMARY_NAV: NavEntry[] = [
-  {
-    href: "/chat",
-    label: "Chat",
-    icon: MessageSquare,
-    tooltipKey: "Chat tooltip",
-  },
+/** Product areas (chat threads live in Recents below). */
+const FEATURE_NAV: NavEntry[] = [
   {
     href: "/agents",
     label: "TutorBot",
@@ -74,18 +67,15 @@ const PRIMARY_NAV: NavEntry[] = [
   },
 ];
 
-const SECONDARY_NAV: NavEntry[] = [
-  { href: "/settings", label: "Settings", icon: Settings },
-];
-const DEFAULT_SESSION_VIEWPORT_CLASS_NAME = "max-h-[112px]";
-const GITHUB_REPO_URL = "https://github.com/HKUDS/AIMTutor";
+/** First four features + Chat = five primary sidebar links; rest live under More. */
+const PRIMARY_FEATURE_NAV = FEATURE_NAV.slice(0, 4);
+const MORE_FEATURE_NAV = FEATURE_NAV.slice(4);
 
 interface SidebarShellProps {
   sessions?: SessionSummary[];
   activeSessionId?: string | null;
   loadingSessions?: boolean;
   showSessions?: boolean;
-  sessionViewportClassName?: string;
   onNewChat?: () => void;
   onSelectSession?: (sessionId: string) => void | Promise<void>;
   onRenameSession?: (sessionId: string, title: string) => void | Promise<void>;
@@ -98,7 +88,6 @@ export function SidebarShell({
   activeSessionId = null,
   loadingSessions = false,
   showSessions = false,
-  sessionViewportClassName = DEFAULT_SESSION_VIEWPORT_CLASS_NAME,
   onNewChat,
   onSelectSession,
   onRenameSession,
@@ -110,6 +99,10 @@ export function SidebarShell({
   const { t } = useTranslation();
   const { sidebarCollapsed: collapsed, setSidebarCollapsed: setCollapsed } =
     useAppShell();
+
+  const chatActive = pathname.startsWith("/chat");
+  const showRecents =
+    showSessions && onSelectSession && onRenameSession && onDeleteSession;
 
   const handleNewChat = () => {
     if (onNewChat) {
@@ -154,9 +147,25 @@ export function SidebarShell({
         {/* Subtle divider */}
         <div className="my-1.5 h-px w-7 bg-[var(--border)]/40" />
 
-        {/* Primary nav */}
+        {/* Feature nav */}
         <nav className="flex w-full flex-col items-center gap-1 px-1.5">
-          {PRIMARY_NAV.map((item) => {
+          <Tooltip label={t("Chat")} side="right">
+            <Link
+              href="/chat"
+              aria-label={t("Chat")}
+              className={`relative flex h-9 w-9 items-center justify-center rounded-xl transition-all duration-150 ${
+                chatActive
+                  ? "bg-[var(--background)]/80 text-[var(--foreground)] shadow-sm"
+                  : "text-[var(--muted-foreground)] hover:bg-[var(--background)]/50 hover:text-[var(--foreground)]"
+              }`}
+            >
+              {chatActive && (
+                <span className="absolute -left-1.5 top-1/2 h-5 w-[3px] -translate-y-1/2 rounded-full bg-[var(--foreground)]/80" />
+              )}
+              <MessageSquare size={18} strokeWidth={chatActive ? 2 : 1.6} />
+            </Link>
+          </Tooltip>
+          {PRIMARY_FEATURE_NAV.map((item) => {
             const active = pathname.startsWith(item.href);
             const description = item.tooltipKey
               ? t(item.tooltipKey)
@@ -185,53 +194,19 @@ export function SidebarShell({
               </Tooltip>
             );
           })}
+          <SidebarMoreNav items={MORE_FEATURE_NAV} collapsed />
         </nav>
 
         <div className="flex-1" />
 
-        {/* Secondary nav + footer */}
-        <div className="flex w-full flex-col items-center gap-1 px-1.5">
-          <div className="my-1 h-px w-7 bg-[var(--border)]/40" />
-          {SECONDARY_NAV.map((item) => {
-            const active = pathname.startsWith(item.href);
-            return (
-              <Link
-                key={item.href}
-                href={item.href}
-                title={t(item.label) as string}
-                className={`relative flex h-9 w-9 items-center justify-center rounded-xl transition-all duration-150 ${
-                  active
-                    ? "bg-[var(--background)]/80 text-[var(--foreground)] shadow-sm"
-                    : "text-[var(--muted-foreground)] hover:bg-[var(--background)]/50 hover:text-[var(--foreground)]"
-                }`}
-              >
-                {active && (
-                  <span className="absolute -left-1.5 top-1/2 h-5 w-[3px] -translate-y-1/2 rounded-full bg-[var(--foreground)]/80" />
-                )}
-                <item.icon size={18} strokeWidth={active ? 2 : 1.6} />
-              </Link>
-            );
-          })}
-          {footerSlot}
-          <a
-            href={GITHUB_REPO_URL}
-            target="_blank"
-            rel="noreferrer noopener"
-            title={t("GitHub")}
-            aria-label={t("GitHub")}
-            className="mt-1 flex h-9 w-9 items-center justify-center rounded-xl text-[var(--muted-foreground)]/70 transition-colors hover:bg-[var(--background)]/50 hover:text-[var(--foreground)]"
-          >
-            <Github size={15} strokeWidth={1.6} />
-          </a>
-          <VersionBadge collapsed />
-        </div>
+        <div className="relative z-40 w-full shrink-0">{footerSlot}</div>
       </aside>
     );
   }
 
   /* ---- Expanded state ---- */
   return (
-    <aside className="flex w-[220px] h-screen shrink-0 flex-col bg-[var(--secondary)] transition-all duration-200">
+    <aside className="flex h-screen min-h-0 w-[220px] shrink-0 flex-col bg-[var(--secondary)] transition-all duration-200">
       {/* Header: logo + collapse toggle */}
       <div className="flex h-14 items-center justify-between px-4">
         <Link
@@ -250,26 +225,31 @@ export function SidebarShell({
         </button>
       </div>
 
-      {/* Primary nav */}
-      <nav className="px-2 pt-1">
-        <div className="space-y-px">
-          {/* New chat */}
-          <button
-            onClick={handleNewChat}
-            className="flex w-full items-center gap-2.5 rounded-lg px-3 py-2 text-[13.5px] text-[var(--muted-foreground)] transition-colors hover:bg-[var(--background)]/60 hover:text-[var(--foreground)]"
-          >
-            <Plus size={16} strokeWidth={2} />
-            <span>{t("New Chat")}</span>
-          </button>
+      {/* New chat + feature links (ChatGPT-style top section) */}
+      <div className="shrink-0 px-2 pt-1">
+        <button
+          onClick={handleNewChat}
+          className="mb-1 flex w-full items-center gap-2.5 rounded-lg border border-[var(--border)]/40 bg-[var(--background)]/35 px-3 py-2 text-[13.5px] font-medium text-[var(--foreground)] shadow-sm transition-colors hover:bg-[var(--background)]/60"
+        >
+          <Plus size={16} strokeWidth={2.2} />
+          <span>{t("New Chat")}</span>
+        </button>
 
-          {PRIMARY_NAV.map((item) => {
+        <nav className="space-y-px pb-2">
+          <Link
+            href="/chat"
+            className={`flex items-center gap-2.5 rounded-lg px-3 py-2 text-[13.5px] transition-colors ${
+              chatActive
+                ? "bg-[var(--background)]/70 font-medium text-[var(--foreground)]"
+                : "text-[var(--muted-foreground)] hover:bg-[var(--background)]/50 hover:text-[var(--foreground)]"
+            }`}
+          >
+            <MessageSquare size={16} strokeWidth={chatActive ? 1.9 : 1.5} />
+            <span>{t("Chat")}</span>
+          </Link>
+
+          {PRIMARY_FEATURE_NAV.map((item) => {
             const active = pathname.startsWith(item.href);
-            const hasSessionsBelow =
-              item.href === "/chat" &&
-              showSessions &&
-              onSelectSession &&
-              onRenameSession &&
-              onDeleteSession;
             const hasBots = item.href === "/agents";
             return (
               <div key={item.href}>
@@ -284,65 +264,37 @@ export function SidebarShell({
                   <item.icon size={16} strokeWidth={active ? 1.9 : 1.5} />
                   <span>{t(item.label)}</span>
                 </Link>
-                {hasSessionsBelow && (
-                  <div
-                    className={`${sessionViewportClassName} overflow-y-auto`}
-                  >
-                    <SessionList
-                      sessions={sessions}
-                      activeSessionId={activeSessionId}
-                      loading={loadingSessions}
-                      onSelect={onSelectSession}
-                      onRename={onRenameSession}
-                      onDelete={onDeleteSession}
-                      compact
-                    />
-                  </div>
-                )}
                 {hasBots && <TutorBotRecent />}
               </div>
             );
           })}
-        </div>
-      </nav>
-
-      {/* Spacer */}
-      <div className="flex-1" />
-
-      {/* Secondary nav + footer */}
-      <div className="border-t border-[var(--border)]/40 px-2 py-2">
-        {SECONDARY_NAV.map((item) => {
-          const active = pathname.startsWith(item.href);
-          return (
-            <Link
-              key={item.href}
-              href={item.href}
-              className={`flex items-center gap-2.5 rounded-lg px-3 py-2 text-[13.5px] transition-colors ${
-                active
-                  ? "bg-[var(--background)]/70 font-medium text-[var(--foreground)]"
-                  : "text-[var(--muted-foreground)] hover:bg-[var(--background)]/50 hover:text-[var(--foreground)]"
-              }`}
-            >
-              <item.icon size={16} strokeWidth={active ? 1.9 : 1.5} />
-              <span>{t(item.label)}</span>
-            </Link>
-          );
-        })}
-        {footerSlot}
-        <div className="mt-0.5 flex items-center gap-0.5">
-          <VersionBadge />
-          <a
-            href={GITHUB_REPO_URL}
-            target="_blank"
-            rel="noreferrer noopener"
-            title={t("GitHub")}
-            aria-label={t("GitHub")}
-            className="flex h-7 w-7 shrink-0 items-center justify-center rounded-md text-[var(--muted-foreground)]/55 transition-colors hover:bg-[var(--background)]/50 hover:text-[var(--muted-foreground)]"
-          >
-            <Github size={13} strokeWidth={1.7} />
-          </a>
-        </div>
+          <SidebarMoreNav items={MORE_FEATURE_NAV} />
+        </nav>
       </div>
+
+      {/* Recents — scrollable chat history */}
+      {showRecents && (
+        <div className="flex min-h-0 flex-1 flex-col pb-2">
+          <p className="px-3 pb-2 pt-1 text-[11px] font-medium uppercase tracking-wider text-[var(--muted-foreground)]">
+            {t("Recents")}
+          </p>
+          <div className="min-h-0 flex-1 overflow-y-auto overflow-x-hidden px-1.5">
+            <SessionList
+              sessions={sessions}
+              activeSessionId={activeSessionId}
+              loading={loadingSessions}
+              onSelect={onSelectSession}
+              onRename={onRenameSession}
+              onDelete={onDeleteSession}
+              compact
+            />
+          </div>
+        </div>
+      )}
+
+      {!showRecents && <div className="flex-1" />}
+
+      {footerSlot}
     </aside>
   );
 }

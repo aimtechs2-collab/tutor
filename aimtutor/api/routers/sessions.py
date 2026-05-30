@@ -67,6 +67,15 @@ class QuizResultsRequest(BaseModel):
     turn_id: str = ""
 
 
+class LiveTranscriptTurn(BaseModel):
+    role: str = Field(..., min_length=1)
+    text: str = Field(..., min_length=1)
+
+
+class LiveTranscriptRequest(BaseModel):
+    turns: list[LiveTranscriptTurn] = Field(default_factory=list)
+
+
 def _format_quiz_results_message(answers: list[QuizResultItem]) -> str:
     total = len(answers)
     correct = sum(1 for item in answers if item.is_correct)
@@ -180,6 +189,17 @@ async def delete_turn_by_message(session_id: str, message_id: int):
         except Exception:
             logger.exception("failed to delete attachment %s for session %s", aid, session_id)
     return result
+
+
+@router.post("/{session_id}/live-transcript")
+async def append_live_transcript(session_id: str, payload: LiveTranscriptRequest):
+    """Persist Gemini Live voice turns as normal chat messages."""
+    from aimtutor.services.session.live_transcript import persist_live_transcript_turns
+
+    return await persist_live_transcript_turns(
+        session_id,
+        [{"role": t.role, "text": t.text} for t in payload.turns],
+    )
 
 
 @router.post("/{session_id}/quiz-results")

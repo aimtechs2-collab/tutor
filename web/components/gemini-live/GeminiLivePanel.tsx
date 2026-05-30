@@ -1,185 +1,177 @@
 "use client";
 
 /**
- * GeminiLivePanel — floating voice-tutoring panel.
- *
- * Design: oscilloscope-meets-tutor. Dark background panel with
- * teal/amber waveform, monospace stats, clean transcript.
+ * In-chat Gemini Live — transcript in the message area (tutor left, you right),
+ * control bar above the composer. No full-screen overlay.
  */
 
 import {
   useCallback,
   useEffect,
   useRef,
-  useState,
+  type ChangeEvent,
+  type ReactNode,
 } from "react";
-import {
-  Mic,
-  MicOff,
-  Zap,
-  X,
-  Volume2,
-  Send,
-  RotateCcw,
-  Download,
-} from "lucide-react";
+import { Mic, Upload, X } from "lucide-react";
 import { useGeminiLive, type VoiceStatus, type TranscriptTurn } from "@/hooks/useGeminiLive";
-import { apiFetch } from "@/lib/api";
-
-// ── props ─────────────────────────────────────────────────────────────────
 
 interface GeminiLivePanelProps {
+  open: boolean;
   sessionId?: string;
   kbName?: string;
   defaultVoice?: string;
-  className?: string;
-  onClose?: () => void;
+  autoStart?: boolean;
+  onClose: () => void;
   onTranscriptUpdate?: (turns: TranscriptTurn[]) => void;
 }
 
-// ── constants ─────────────────────────────────────────────────────────────
-
-const VOICES = ["Aoede", "Puck", "Charon", "Kore", "Fenrir"] as const;
-
-const STATUS_LABELS: Record<VoiceStatus, string> = {
-  idle: "Ready",
+const STATUS_HINT: Record<VoiceStatus, string> = {
+  idle: "Tap Live to start voice",
   connecting: "Connecting…",
-  listening: "Listening",
-  speaking: "Speaking",
+  listening: "Listening — speak anytime",
+  speaking: "Tutor is speaking",
   reconnecting: "Reconnecting…",
-  error: "Error",
+  error: "Session error",
 };
 
-const STATUS_COLORS: Record<VoiceStatus, string> = {
-  idle: "#6b7280",
-  connecting: "#f59e0b",
-  listening: "#14b8a6",
-  speaking: "#f97316",
-  reconnecting: "#f59e0b",
-  error: "#ef4444",
-};
-
-// ── waveform component ────────────────────────────────────────────────────
-
-function Waveform({ status, analyserNode }: {
+function LiveOrb({
+  status,
+  active,
+  compact = false,
+}: {
   status: VoiceStatus;
-  analyserNode: AnalyserNode | null;
+  active: boolean;
+  compact?: boolean;
 }) {
-  const canvasRef = useRef<HTMLCanvasElement>(null);
-  const rafRef = useRef<number>(0);
-  const smoothRef = useRef<Float32Array>(new Float32Array(32).fill(0));
+  const isLive =
+    active &&
+    (status === "listening" || status === "speaking" || status === "connecting");
 
-  useEffect(() => {
-    const canvas = canvasRef.current;
-    if (!canvas) return;
-    const ctx = canvas.getContext("2d")!;
-    const BAR_COUNT = 32;
-    const data = new Uint8Array(analyserNode ? analyserNode.fftSize : 128);
-
-    const draw = () => {
-      rafRef.current = requestAnimationFrame(draw);
-      const W = canvas.width;
-      const H = canvas.height;
-      ctx.clearRect(0, 0, W, H);
-
-      // Background
-      ctx.fillStyle = "rgba(9,11,17,0.0)";
-      ctx.fillRect(0, 0, W, H);
-
-      if (analyserNode) analyserNode.getByteTimeDomainData(data);
-
-      const barW = Math.floor(W / BAR_COUNT) - 2;
-      const isActive = status === "listening" || status === "speaking";
-      const color = status === "speaking" ? "#f97316" : "#14b8a6";
-
-      for (let i = 0; i < BAR_COUNT; i++) {
-        let amplitude: number;
-        if (!isActive || !analyserNode) {
-          // Idle: gentle flatline ripple
-          amplitude = 0.03 + Math.sin(Date.now() / 600 + i * 0.4) * 0.02;
-        } else {
-          const sample = data[Math.floor((i / BAR_COUNT) * data.length)] / 128 - 1;
-          amplitude = Math.abs(sample);
-        }
-
-        // Smooth
-        smoothRef.current[i] = smoothRef.current[i] * 0.75 + amplitude * 0.25;
-        const barH = Math.max(3, smoothRef.current[i] * H * 2.2);
-
-        const x = i * (barW + 2);
-        const y = (H - barH) / 2;
-
-        // Glow
-        ctx.shadowBlur = isActive ? 8 : 3;
-        ctx.shadowColor = color;
-        ctx.fillStyle = color;
-        ctx.globalAlpha = isActive ? 0.85 : 0.35;
-        ctx.beginPath();
-        ctx.roundRect(x, y, barW, barH, 2);
-        ctx.fill();
-      }
-      ctx.globalAlpha = 1;
-      ctx.shadowBlur = 0;
-    };
-
-    rafRef.current = requestAnimationFrame(draw);
-    return () => cancelAnimationFrame(rafRef.current);
-  }, [status, analyserNode]);
-
-  return (
-    <canvas
-      ref={canvasRef}
-      width={280}
-      height={56}
-      className="w-full rounded-md"
-      style={{ background: "rgba(0,0,0,0.3)" }}
-    />
-  );
-}
-
-// ── transcript item ────────────────────────────────────────────────────────
-
-function TurnItem({ turn }: { turn: TranscriptTurn }) {
-  const isUser = turn.role === "user";
-  const time = new Date(turn.ts).toLocaleTimeString([], {
-    hour: "2-digit",
-    minute: "2-digit",
-  });
-  return (
-    <div className={`flex flex-col gap-0.5 ${isUser ? "items-end" : "items-start"}`}>
+  if (compact) {
+    return (
       <div
-        className={`max-w-[90%] rounded-xl px-3 py-2 text-sm leading-relaxed ${
-          isUser
-            ? "bg-teal-500/20 text-teal-100 border border-teal-500/30"
-            : "bg-white/8 text-gray-200 border border-white/10"
-        }`}
-        style={{ fontFamily: "'SF Mono', 'Fira Code', monospace", fontSize: "0.8rem" }}
+        className="relative h-14 w-14 shrink-0 overflow-hidden rounded-full"
+        style={{
+          boxShadow: isLive
+            ? "0 0 28px rgba(56, 189, 248, 0.4)"
+            : "0 0 12px rgba(99, 102, 241, 0.15)",
+        }}
+        aria-hidden
       >
-        {turn.text}
+        <div
+          className="absolute inset-0 rounded-full"
+          style={{
+            background:
+              "radial-gradient(circle at 35% 40%, #7dd3fc 0%, #6366f1 50%, #312e81 100%)",
+            animation: isLive ? "live-orb-drift 4s ease-in-out infinite" : "none",
+          }}
+        />
+        <div
+          className="absolute inset-0 rounded-full mix-blend-screen opacity-80"
+          style={{
+            background:
+              "radial-gradient(circle at 65% 35%, rgba(255,255,255,0.55) 0%, transparent 60%)",
+            animation: isLive ? "live-orb-pulse 2.2s ease-in-out infinite" : "none",
+          }}
+        />
       </div>
-      <span className="text-[10px] text-gray-500 px-1">{time}</span>
+    );
+  }
+
+  return (
+    <div
+      className="relative flex h-[48px] w-[min(200px,36vw)] items-center justify-center overflow-hidden rounded-full border border-[var(--border)]/60 bg-[var(--muted)]/30"
+      style={{
+        boxShadow: isLive
+          ? "0 0 32px rgba(56, 189, 248, 0.25)"
+          : undefined,
+      }}
+      aria-hidden
+    >
+      <div
+        className="absolute inset-0 rounded-full opacity-90"
+        style={{
+          background:
+            "radial-gradient(ellipse 80% 120% at 30% 50%, #7dd3fc 0%, #6366f1 45%, #312e81 100%)",
+          animation: isLive ? "live-orb-drift 4s ease-in-out infinite" : "none",
+        }}
+      />
+      <div
+        className="absolute inset-0 rounded-full mix-blend-screen"
+        style={{
+          background:
+            "radial-gradient(ellipse 60% 100% at 70% 40%, rgba(255,255,255,0.45) 0%, transparent 55%)",
+          animation: isLive ? "live-orb-pulse 2.2s ease-in-out infinite" : "none",
+        }}
+      />
     </div>
   );
 }
 
-// ── main panel ─────────────────────────────────────────────────────────────
+function CircleControl({
+  onClick,
+  disabled,
+  active,
+  label,
+  children,
+}: {
+  onClick?: () => void;
+  disabled?: boolean;
+  active?: boolean;
+  label: string;
+  children: ReactNode;
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      disabled={disabled}
+      aria-label={label}
+      title={label}
+      className={`flex h-11 w-11 shrink-0 items-center justify-center rounded-full border transition-all disabled:opacity-40 ${
+        active
+          ? "border-teal-500/40 bg-teal-500/15 text-teal-600 dark:text-teal-300"
+          : "border-[var(--border)] bg-[var(--muted)]/50 text-[var(--foreground)] hover:bg-[var(--muted)]"
+      }`}
+    >
+      {children}
+    </button>
+  );
+}
+
+function TranscriptBubble({ turn }: { turn: TranscriptTurn }) {
+  const isUser = turn.role === "user";
+  return (
+    <div
+      className={`flex w-full ${isUser ? "justify-end" : "justify-start"}`}
+    >
+      <div
+        className={`max-w-[min(85%,28rem)] rounded-2xl px-4 py-2.5 text-[14px] leading-relaxed ${
+          isUser
+            ? "bg-teal-500/15 text-[var(--foreground)] border border-teal-500/25"
+            : "bg-[var(--muted)]/60 text-[var(--foreground)] border border-[var(--border)]"
+        }`}
+      >
+        <span className="mb-1 block text-[10px] font-medium uppercase tracking-wide text-[var(--muted-foreground)]">
+          {isUser ? "You" : "Tutor"}
+        </span>
+        {turn.text}
+      </div>
+    </div>
+  );
+}
 
 export default function GeminiLivePanel({
+  open,
   sessionId,
   kbName,
   defaultVoice = "Aoede",
-  className = "",
+  autoStart = true,
   onClose,
   onTranscriptUpdate,
 }: GeminiLivePanelProps) {
-  const [selectedVoice, setSelectedVoice] = useState(defaultVoice);
-  const [textInput, setTextInput] = useState("");
-  const [showShortcuts, setShowShortcuts] = useState(false);
-  const [analyserNode, setAnalyserNode] = useState<AnalyserNode | null>(null);
-
-  const transcriptRef = useRef<HTMLDivElement>(null);
-  const panelRef = useRef<HTMLDivElement>(null);
-  const textInputRef = useRef<HTMLInputElement>(null);
+  const fileInputRef = useRef<HTMLInputElement>(null);
+  const scrollRef = useRef<HTMLDivElement>(null);
 
   const {
     status,
@@ -190,331 +182,153 @@ export default function GeminiLivePanel({
     stopSession,
     interrupt,
     sendText,
-    clearTranscript,
   } = useGeminiLive();
 
-  // Notify parent of transcript changes
   useEffect(() => {
     onTranscriptUpdate?.(transcript);
   }, [transcript, onTranscriptUpdate]);
 
-  // Auto-scroll transcript
   useEffect(() => {
-    const el = transcriptRef.current;
+    const el = scrollRef.current;
     if (el) el.scrollTop = el.scrollHeight;
-  }, [transcript]);
-
-  // Keyboard shortcuts
-  useEffect(() => {
-    const panel = panelRef.current;
-    if (!panel) return;
-    const onKey = (e: KeyboardEvent) => {
-      if (document.activeElement === textInputRef.current) return;
-      if (e.code === "Space") {
-        e.preventDefault();
-        if (status === "idle") handleStart();
-        else if (status === "speaking") interrupt();
-      } else if (e.code === "Escape") {
-        if (status !== "idle") stopSession();
-      } else if (e.code === "KeyT") {
-        textInputRef.current?.focus();
-      } else if (e.code === "KeyV") {
-        const idx = VOICES.indexOf(selectedVoice as any);
-        setSelectedVoice(VOICES[(idx + 1) % VOICES.length]);
-      }
-    };
-    panel.addEventListener("keydown", onKey);
-    return () => panel.removeEventListener("keydown", onKey);
-  }, [status, interrupt, stopSession, selectedVoice]);
+  }, [transcript, status]);
 
   const handleStart = useCallback(async () => {
     await startSession({
-      voice: selectedVoice,
+      voice: defaultVoice,
       sessionId,
       kbName,
     });
-  }, [startSession, selectedVoice, sessionId, kbName]);
+  }, [startSession, defaultVoice, sessionId, kbName]);
 
-  const handleTextSend = useCallback(() => {
-    if (!textInput.trim()) return;
-    sendText(textInput.trim());
-    setTextInput("");
-  }, [sendText, textInput]);
+  const autoStartDoneRef = useRef(false);
+  useEffect(() => {
+    if (!open) {
+      autoStartDoneRef.current = false;
+      return;
+    }
+    if (!autoStart || autoStartDoneRef.current) return;
+    autoStartDoneRef.current = true;
+    if (status === "idle" && !error) void handleStart();
+  }, [open, autoStart, status, error, handleStart]);
 
-  const handleExport = useCallback(async () => {
-    if (!transcript.length) return;
-    const lines = [
-      `# Voice Session — ${new Date().toLocaleDateString()}`,
-      `**Turns:** ${transcript.length}`,
-      "---",
-      ...transcript.map(
-        (t) => `**${t.role === "user" ? "You" : "Tutor"}:** ${t.text}`,
-      ),
-    ].join("\n\n");
-    const blob = new Blob([lines], { type: "text/markdown" });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement("a");
-    a.href = url;
-    a.download = `voice-session-${Date.now()}.md`;
-    a.click();
-    URL.revokeObjectURL(url);
-  }, [transcript]);
+  useEffect(() => {
+    if (!open && status !== "idle") {
+      stopSession();
+    }
+  }, [open, status, stopSession]);
 
-  const dotColor = STATUS_COLORS[status];
-  const isActive = status !== "idle" && status !== "error";
+  const handleClose = useCallback(() => {
+    stopSession();
+    onClose();
+  }, [stopSession, onClose]);
+
+  const handleUpload = useCallback(
+    async (e: ChangeEvent<HTMLInputElement>) => {
+      const file = e.target.files?.[0];
+      e.target.value = "";
+      if (!file) return;
+      if (file.type.startsWith("text/") || file.name.endsWith(".md")) {
+        const text = await file.text();
+        sendText(`[Attached file: ${file.name}]\n\n${text.slice(0, 8000)}`);
+        return;
+      }
+      sendText(
+        `I shared a file named "${file.name}" (${file.type || "unknown type"}). Please help me with it.`,
+      );
+    },
+    [sendText],
+  );
+
+  const isSessionActive =
+    status === "listening" ||
+    status === "speaking" ||
+    status === "connecting" ||
+    status === "reconnecting";
+
+  if (!open) return null;
 
   if (!isSupported) {
     return (
-      <div
-        className={`rounded-xl border p-5 text-sm ${className}`}
-        style={{
-          background: "rgba(9,11,17,0.95)",
-          borderColor: "rgba(255,255,255,0.1)",
-          color: "#9ca3af",
-        }}
-      >
-        {!window.isSecureContext ? (
-          <p>⚠️ Live Voice requires <strong>HTTPS</strong>. Please access this app over a secure connection.</p>
-        ) : (
-          <p>⚠️ Live Voice is not supported in this browser. Try Chrome or Edge.</p>
-        )}
+      <div className="flex flex-1 min-h-0 flex-col items-center justify-center px-6 text-center text-sm text-[var(--muted-foreground)]">
+        <p>
+          {!window.isSecureContext
+            ? "Live voice requires HTTPS."
+            : "Live voice is not supported in this browser."}
+        </p>
       </div>
     );
   }
 
   return (
     <div
-      ref={panelRef}
-      tabIndex={0}
-      className={`flex flex-col rounded-xl outline-none ${className}`}
-      style={{
-        background: "rgba(9,11,17,0.97)",
-        border: "1px solid rgba(255,255,255,0.1)",
-        boxShadow: "0 24px 80px rgba(0,0,0,0.6)",
-        width: 340,
-        fontFamily: "system-ui, sans-serif",
-      }}
+      className="mx-auto flex w-full flex-1 min-h-0 flex-col overflow-hidden"
+      role="region"
+      aria-label="Live voice conversation"
     >
-      {/* ── Header ── */}
+      {/* Transcript — tutor left, you right */}
       <div
-        className="flex items-center justify-between px-4 py-3"
-        style={{ borderBottom: "1px solid rgba(255,255,255,0.08)" }}
-      >
-        <div className="flex items-center gap-2">
-          <Volume2 size={14} color="#14b8a6" />
-          <span
-            className="text-xs font-semibold tracking-widest uppercase"
-            style={{ color: "#e2e8f0", letterSpacing: "0.12em" }}
-          >
-            Live Tutor
-          </span>
-        </div>
-        <div className="flex items-center gap-3">
-          {/* Status dot */}
-          <div className="flex items-center gap-1.5">
-            <span
-              className="h-2 w-2 rounded-full"
-              style={{
-                background: dotColor,
-                boxShadow: isActive ? `0 0 6px ${dotColor}` : undefined,
-                animation: isActive ? "pulse 1.5s infinite" : undefined,
-              }}
-            />
-            <span className="text-[10px]" style={{ color: "#6b7280" }}>
-              {STATUS_LABELS[status]}
-            </span>
-          </div>
-          {onClose && (
-            <button
-              onClick={onClose}
-              className="rounded p-0.5 opacity-50 transition-opacity hover:opacity-100"
-              style={{ color: "#9ca3af" }}
-            >
-              <X size={13} />
-            </button>
-          )}
-        </div>
-      </div>
-
-      {/* ── Waveform ── */}
-      <div className="px-4 pt-3">
-        <Waveform status={status} analyserNode={analyserNode} />
-      </div>
-
-      {/* ── Transcript ── */}
-      <div
-        ref={transcriptRef}
-        className="flex-1 overflow-y-auto px-4 py-3"
-        style={{ minHeight: 120, maxHeight: 220, scrollbarWidth: "thin" }}
+        ref={scrollRef}
+        className="flex-1 min-h-0 overflow-y-auto space-y-4 px-1 py-4 [scrollbar-gutter:stable] [scrollbar-width:thin]"
       >
         {transcript.length === 0 ? (
-          <p
-            className="text-center text-xs"
-            style={{ color: "#4b5563", paddingTop: 24 }}
-          >
-            {status === "idle"
-              ? "Press Start to begin a voice session"
-              : "Listening…"}
-          </p>
-        ) : (
-          <div className="flex flex-col gap-3">
-            {transcript.map((turn, i) => (
-              <TurnItem key={i} turn={turn} />
-            ))}
+          <div className="flex h-full min-h-[200px] flex-col items-center justify-center gap-4 text-center">
+            <LiveOrb status={status} active={isSessionActive} compact />
+            <p className="max-w-sm text-[15px] text-[var(--muted-foreground)]">
+              {error || STATUS_HINT[status]}
+            </p>
           </div>
+        ) : (
+          transcript.map((turn, i) => (
+            <TranscriptBubble key={`${turn.ts}-${i}`} turn={turn} />
+          ))
         )}
       </div>
 
-      {/* ── Error banner ── */}
-      {error && (
-        <div
-          className="mx-4 mb-2 rounded-lg px-3 py-2 text-xs"
-          style={{ background: "rgba(239,68,68,0.15)", color: "#fca5a5", border: "1px solid rgba(239,68,68,0.3)" }}
-        >
+      {error && transcript.length > 0 && (
+        <p className="shrink-0 px-2 pb-1 text-center text-xs text-red-500">
           {error}
-        </div>
+        </p>
       )}
 
-      {/* ── Controls ── */}
-      <div
-        className="px-4 pb-4 pt-2"
-        style={{ borderTop: "1px solid rgba(255,255,255,0.06)" }}
-      >
-        {/* Primary action buttons */}
-        <div className="flex items-center gap-2 mb-3">
-          {status === "idle" || status === "error" ? (
-            <button
-              onClick={handleStart}
-              className="flex flex-1 items-center justify-center gap-2 rounded-lg py-2 text-sm font-medium transition-all"
-              style={{
-                background: "rgba(20,184,166,0.2)",
-                border: "1px solid rgba(20,184,166,0.4)",
-                color: "#5eead4",
-              }}
-            >
-              <Mic size={14} />
-              Start
-            </button>
-          ) : (
-            <>
-              <button
-                onClick={stopSession}
-                className="flex flex-1 items-center justify-center gap-2 rounded-lg py-2 text-sm font-medium transition-all"
-                style={{
-                  background: "rgba(239,68,68,0.15)",
-                  border: "1px solid rgba(239,68,68,0.3)",
-                  color: "#fca5a5",
-                }}
-              >
-                <MicOff size={14} />
-                Stop
-              </button>
-              <button
-                onClick={interrupt}
-                disabled={status !== "speaking"}
-                className="flex items-center justify-center gap-1.5 rounded-lg px-3 py-2 text-sm font-medium transition-all disabled:opacity-30"
-                style={{
-                  background: "rgba(249,115,22,0.15)",
-                  border: "1px solid rgba(249,115,22,0.3)",
-                  color: "#fdba74",
-                }}
-                title="Interrupt (Space)"
-              >
-                <Zap size={13} />
-                Cut
-              </button>
-            </>
-          )}
-        </div>
-
-        {/* Text fallback input */}
-        <div className="flex items-center gap-2 mb-3">
+      {/* Bottom live controls — sits above composer */}
+      <div className="shrink-0 border-t border-[var(--border)]/80 bg-[var(--background)]/95 px-2 py-3 backdrop-blur-sm">
+        <div className="mx-auto flex max-w-[520px] items-center justify-center gap-2.5 sm:gap-3">
           <input
-            ref={textInputRef}
-            value={textInput}
-            onChange={(e) => setTextInput(e.target.value)}
-            onKeyDown={(e) => e.key === "Enter" && handleTextSend()}
-            placeholder="Type instead…"
-            className="flex-1 rounded-lg px-3 py-1.5 text-xs outline-none"
-            style={{
-              background: "rgba(255,255,255,0.06)",
-              border: "1px solid rgba(255,255,255,0.1)",
-              color: "#e2e8f0",
-            }}
+            ref={fileInputRef}
+            type="file"
+            className="hidden"
+            accept="text/*,.md,.txt,.pdf,image/*"
+            onChange={(e) => void handleUpload(e)}
           />
-          <button
-            onClick={handleTextSend}
-            disabled={!textInput.trim() || !isActive}
-            className="rounded-lg p-1.5 disabled:opacity-30 transition-opacity"
-            style={{ background: "rgba(20,184,166,0.2)", color: "#5eead4" }}
-          >
-            <Send size={13} />
-          </button>
-        </div>
 
-        {/* Voice selector + util buttons */}
-        <div className="flex items-center gap-2">
-          <select
-            value={selectedVoice}
-            onChange={(e) => setSelectedVoice(e.target.value)}
-            disabled={isActive}
-            className="flex-1 rounded-lg px-2 py-1 text-xs outline-none disabled:opacity-50"
-            style={{
-              background: "rgba(255,255,255,0.06)",
-              border: "1px solid rgba(255,255,255,0.1)",
-              color: "#9ca3af",
+          <CircleControl
+            label="Upload file"
+            disabled={!isSessionActive}
+            onClick={() => fileInputRef.current?.click()}
+          >
+            <Upload size={18} strokeWidth={1.75} />
+          </CircleControl>
+
+          <LiveOrb status={status} active={isSessionActive} />
+
+          <CircleControl
+            label={status === "speaking" ? "Interrupt" : "Microphone"}
+            active={isSessionActive}
+            onClick={() => {
+              if (status === "speaking") interrupt();
             }}
           >
-            {VOICES.map((v) => (
-              <option key={v} value={v} style={{ background: "#1f2937" }}>
-                {v}
-              </option>
-            ))}
-          </select>
+            <Mic size={18} strokeWidth={1.75} />
+          </CircleControl>
 
-          <button
-            onClick={clearTranscript}
-            title="Clear transcript"
-            className="rounded-lg p-1.5 opacity-50 transition-opacity hover:opacity-100"
-            style={{ color: "#9ca3af" }}
-          >
-            <RotateCcw size={13} />
-          </button>
-          <button
-            onClick={handleExport}
-            disabled={!transcript.length}
-            title="Export transcript"
-            className="rounded-lg p-1.5 opacity-50 transition-opacity hover:opacity-100 disabled:opacity-20"
-            style={{ color: "#9ca3af" }}
-          >
-            <Download size={13} />
-          </button>
-          <button
-            onClick={() => setShowShortcuts((s) => !s)}
-            className="rounded-lg px-2 py-1 text-[10px] opacity-40 hover:opacity-70 transition-opacity"
-            style={{ color: "#9ca3af", fontFamily: "monospace" }}
-          >
-            ⌨
-          </button>
+          <CircleControl label="End live" onClick={handleClose}>
+            <X size={20} strokeWidth={1.75} />
+          </CircleControl>
         </div>
-
-        {/* Keyboard shortcuts legend */}
-        {showShortcuts && (
-          <div
-            className="mt-2 rounded-lg px-3 py-2 text-[10px] space-y-1"
-            style={{
-              background: "rgba(255,255,255,0.04)",
-              border: "1px solid rgba(255,255,255,0.08)",
-              color: "#6b7280",
-              fontFamily: "monospace",
-            }}
-          >
-            <div><kbd className="opacity-70">Space</kbd> — Start / Interrupt</div>
-            <div><kbd className="opacity-70">Esc</kbd> — Stop session</div>
-            <div><kbd className="opacity-70">T</kbd> — Focus text input</div>
-            <div><kbd className="opacity-70">V</kbd> — Cycle voice</div>
-          </div>
-        )}
+        <p className="mt-2 text-center text-[11px] text-[var(--muted-foreground)]">
+          {STATUS_HINT[status]}
+        </p>
       </div>
     </div>
   );
