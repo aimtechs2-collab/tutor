@@ -417,3 +417,61 @@ async def admin_audit_log(
     """Recent admin actions from the audit trail."""
     from aimtutor.multi_user.audit import get_audit_log
     return get_audit_log(limit=limit)
+
+
+@router.get("/admin/activity")
+async def admin_cross_user_activity(
+    limit: int = 100,
+    _: Any = Depends(require_admin),
+) -> list[dict[str, Any]]:
+    """
+    Aggregate recent sessions across ALL users for the admin activity feed.
+    Switches into each user context to read their session store.
+    """
+    from aimtutor.multi_user.context import reset_current_user, set_current_user
+    from aimtutor.multi_user.models import CurrentUser
+    from aimtutor.multi_user.paths import scope_for_user
+    from aimtutor.services.session import get_session_store
+
+    users = list_user_info()
+    all_activities: list[dict[str, Any]] = []
+
+    for user_info in users:
+        uid: str = user_info.get("id", "")
+        username: str = user_info.get("username", uid)
+        role: str = user_info.get("role", "user")
+        if user_info.get("disabled") or not uid:
+            continue
+        try:
+            user = CurrentUser(
+                id=uid,
+                username=username,
+                role=role,
+                scope=scope_for_user(uid, is_admin=role == "admin"),
+            )
+            token = set_current_user(user)
+            try:
+                store = get_session_store()
+                sessions = await store.list_sessions(limit=20, offset=0)
+                for s in sessions:
+                    capability = str(s.get("capability") or "chat")
+                    all_activities.append({
+                        "id": s.get("session_id"),
+                        "type": capability.replace("deep_", ""),
+                        "capability": capability,
+                        "title": s.get("title", "Untitled"),
+                        "timestamp": s.get("updated_at", s.get("created_at", 0)),
+                        "summary": str(s.get("last_message") or "")[:120],
+                        "message_count": s.get("message_count", 0),
+                        "status": s.get("status", "idle"),
+                        "user": {"id": uid, "username": username},
+                    })
+            finally:
+                reset_current_user(token)
+        except Exception as exc:
+            logger.warning("admin_activity: failed for user %s: %s", uid, exc)
+            continue
+
+    # Sort by most recent first
+    all_activities.sort(key=lambda x: x.get("timestamp", 0), reverse=True)
+    return all_activities[:limit]

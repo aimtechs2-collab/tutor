@@ -43,7 +43,7 @@ export default function AdminOverviewPage() {
       .then(setStats)
       .catch(() => {});
 
-    apiFetch(apiUrl("/api/v1/dashboard/recent?limit=20"))
+    apiFetch(apiUrl("/api/v1/multi-user/admin/activity?limit=20"))
       .then((r) => r.json())
       .then(setRecentActivity)
       .catch(() => {});
@@ -105,7 +105,7 @@ export default function AdminOverviewPage() {
           <table className="w-full text-sm">
             <thead>
               <tr style={{ background: "var(--muted)", borderBottom: "1px solid var(--border)" }}>
-                {["Type", "Title", "Messages", "Time"].map((h) => (
+                {["User", "Type", "Title", "Messages", "Time"].map((h) => (
                   <th
                     key={h}
                     className="px-4 py-2.5 text-left text-xs font-medium"
@@ -130,6 +130,9 @@ export default function AdminOverviewPage() {
                     className="transition-colors hover:bg-[var(--accent)]"
                     style={{ borderBottom: "1px solid var(--border)" }}
                   >
+                    <td className="px-4 py-3 text-xs" style={{ color: "var(--muted-foreground)" }}>
+                      {(a as any).user?.username ?? "—"}
+                    </td>
                     <td className="px-4 py-3">
                       <span className="mr-1.5">{TYPE_ICONS[a.type] ?? "📄"}</span>
                       <span className="text-xs capitalize" style={{ color: "var(--muted-foreground)" }}>

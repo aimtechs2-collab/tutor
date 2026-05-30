@@ -44,7 +44,7 @@ export default function AdminActivityPage() {
 
   const load = () => {
     setLoading(true);
-    apiFetch(apiUrl("/api/v1/dashboard/recent?limit=100"))
+    apiFetch(apiUrl("/api/v1/multi-user/admin/activity?limit=100"))
       .then((r) => r.json())
       .then((d: Activity[]) => { setActivities(Array.isArray(d) ? d : []); setLoading(false); })
       .catch(() => setLoading(false));
@@ -119,7 +119,7 @@ export default function AdminActivityPage() {
         <table className="w-full text-sm">
           <thead>
             <tr style={{ background: "var(--muted)", borderBottom: "1px solid var(--border)" }}>
-              {["Type", "Title", "Summary", "Messages", "Time"].map((h) => (
+              {["User", "Type", "Title", "Summary", "Messages", "Time"].map((h) => (
                 <th
                   key={h}
                   className="px-4 py-2.5 text-left text-xs font-medium"
@@ -154,6 +154,9 @@ export default function AdminActivityPage() {
                   className="transition-colors hover:bg-[var(--accent)]"
                   style={{ borderBottom: "1px solid var(--border)" }}
                 >
+                  <td className="px-4 py-3 text-xs" style={{ color: "var(--muted-foreground)" }}>
+                    {(a as any).user?.username ?? "—"}
+                  </td>
                   <td className="px-4 py-3">
                     <span
                       className="inline-flex items-center gap-1.5 rounded-full px-2.5 py-0.5 text-xs font-medium capitalize"
