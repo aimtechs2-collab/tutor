@@ -1,7 +1,9 @@
 """Auth router — login, logout, status, registration, and user-management endpoints."""
 
 from contextvars import Token as _CtxToken
+import asyncio
 import logging
+from contextlib import suppress
 
 import bcrypt
 from fastapi import (
@@ -10,6 +12,7 @@ from fastapi import (
     Depends,
     Header,
     HTTPException,
+    Request,
     Response,
     WebSocket,
     status,
@@ -526,8 +529,27 @@ async def auth_status(
     )
 
 
+async def _record_login_event(user_id: str, request: Request) -> None:
+    try:
+        from aimtutor.services.risk_agent import record_login_event_sync
+
+        forwarded = request.headers.get("X-Forwarded-For", "")
+        ip = forwarded.split(",")[0].strip() if forwarded else ""
+        if not ip:
+            ip = request.client.host if request.client else "unknown"
+        user_agent = request.headers.get("User-Agent", "")
+        await asyncio.to_thread(
+            record_login_event_sync,
+            user_id=user_id,
+            ip_address=ip,
+            user_agent=user_agent,
+        )
+    except Exception:
+        pass
+
+
 @router.post("/login")
-async def login(body: LoginRequest, response: Response) -> dict:
+async def login(body: LoginRequest, response: Response, request: Request) -> dict:
     """Validate credentials and set a JWT cookie."""
     if clerk_is_enabled():
         raise HTTPException(
@@ -557,6 +579,8 @@ async def login(body: LoginRequest, response: Response) -> dict:
             secure=_SECURE,
         )
         logger.info(f"User '{payload.username}' logged in via PocketBase (role={payload.role!r})")
+        with suppress(Exception):
+            asyncio.create_task(_record_login_event(str(payload.user_id or ""), request))
         return {
             "ok": True,
             "user_id": payload.user_id,
@@ -584,6 +608,8 @@ async def login(body: LoginRequest, response: Response) -> dict:
     )
 
     logger.info(f"User '{result.username}' logged in (role={result.role!r})")
+    with suppress(Exception):
+        asyncio.create_task(_record_login_event(str(result.user_id or ""), request))
     return {
         "ok": True,
         "user_id": result.user_id,

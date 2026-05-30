@@ -1,32 +1,65 @@
 export type AdminSection =
   | "overview"
-  | "billing"
-  | "reports"
-  | "audit"
   | "users"
-  | "conversations"
-  | "support"
-  | "risk"
+  | "billing"
   | "courses"
-  | "tutor-personas";
+  | "tutor-personas"
+  | "conversations"
+  | "risk"
+  | "activity"
+  | "support"
+  | "notifications"
+  | "automation"
+  | "progress"
+  | "reports"
+  | "audit";
 
 const ROLE_SECTIONS: Record<string, AdminSection[]> = {
-  finance_admin: ["overview", "billing", "reports", "audit"],
-  support_agent: ["overview", "users", "conversations", "support"],
+  finance_admin: [
+    "overview",
+    "billing",
+    "reports",
+    "progress",
+    "audit",
+    "notifications",
+  ],
+  support_agent: [
+    "overview",
+    "users",
+    "conversations",
+    "activity",
+    "support",
+    "notifications",
+    "automation",
+  ],
   ai_safety_admin: ["overview", "users", "conversations", "risk"],
-  tutor_manager: ["overview", "users", "courses", "tutor-personas"],
+  tutor_manager: [
+    "overview",
+    "users",
+    "courses",
+    "tutor-personas",
+    "notifications",
+    "progress",
+  ],
 };
 
 export const ADMIN_PATH_SECTIONS: Array<{ prefix: string; section: AdminSection }> = [
-  { prefix: "/admin/users", section: "users" },
+  { prefix: "/admin/intelligence", section: "overview" },
+  { prefix: "/admin/billing/costs", section: "billing" },
+  { prefix: "/admin/billing", section: "billing" },
   { prefix: "/admin/plans", section: "billing" },
-  { prefix: "/admin/conversations", section: "conversations" },
-  { prefix: "/admin/reports", section: "reports" },
-  { prefix: "/admin/audit", section: "audit" },
-  { prefix: "/admin/support", section: "support" },
+  { prefix: "/admin/users", section: "users" },
   { prefix: "/admin/risk", section: "risk" },
   { prefix: "/admin/courses", section: "courses" },
   { prefix: "/admin/tutor-personas", section: "tutor-personas" },
+  { prefix: "/admin/conversations", section: "conversations" },
+  { prefix: "/admin/activity", section: "activity" },
+  { prefix: "/admin/support", section: "support" },
+  { prefix: "/admin/notifications", section: "notifications" },
+  { prefix: "/admin/automation", section: "automation" },
+  { prefix: "/admin/progress", section: "progress" },
+  { prefix: "/admin/reports", section: "reports" },
+  { prefix: "/admin/audit", section: "audit" },
   { prefix: "/admin", section: "overview" },
 ];
 

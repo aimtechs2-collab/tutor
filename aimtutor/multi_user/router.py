@@ -16,6 +16,7 @@ from aimtutor.api.routers.auth import (
     require_tutor_manager,
     require_users_read,
 )
+from aimtutor.services.analytics import get_analytics_overview_sync
 from aimtutor.knowledge.manager import KnowledgeBaseManager
 from aimtutor.services.config.model_catalog import ModelCatalogService
 from aimtutor.services.skill.service import SkillService
@@ -137,6 +138,18 @@ async def my_access() -> dict[str, Any]:
         "skills": [] if user.is_admin else sorted(assigned_skill_ids(user.id)),
         "spaces": [] if user.is_admin else load_grant(user.id).get("spaces", []),
     }
+
+
+@router.get("/admin/analytics/overview")
+async def admin_analytics_overview(
+    period: str = "30d",
+    _: object = Depends(require_admin),
+) -> dict[str, Any]:
+    if period not in {"7d", "30d", "90d"}:
+        raise HTTPException(status_code=400, detail="period must be 7d, 30d, or 90d")
+    import asyncio
+
+    return await asyncio.to_thread(get_analytics_overview_sync, period)
 
 
 @router.get("/admin/resources")

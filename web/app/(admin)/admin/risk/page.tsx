@@ -1,177 +1,364 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import Link from "next/link";
-import { RefreshCw, CheckCircle } from "lucide-react";
-import { apiFetch, apiUrl } from "@/lib/api";
+import { Loader2, RefreshCw, ScanSearch, ShieldAlert } from "lucide-react";
+import { notify } from "@/lib/notifications";
+import { suspendUser } from "@/lib/admin-api";
+import {
+  fetchRiskFlags,
+  fetchRiskSummary,
+  formatRiskDetails,
+  formatRiskType,
+  reviewRiskFlag,
+  startRiskScan,
+  type RiskFlag,
+  type RiskSummary,
+} from "@/lib/risk-api";
 
-interface RiskFlag {
-  id: string;
-  session_id: string;
-  user_id: string;
-  username: string;
-  flag_type: string;
-  reason: string;
-  flagged_by: string;
-  resolved: boolean;
-  created_at: string;
+function formatDateTime(iso?: string): string {
+  if (!iso) return "—";
+  try {
+    return new Date(iso).toLocaleString(undefined, {
+      year: "numeric",
+      month: "short",
+      day: "numeric",
+      hour: "2-digit",
+      minute: "2-digit",
+    });
+  } catch {
+    return "—";
+  }
 }
 
-const FLAG_STYLES: Record<string, { bg: string; text: string; label: string }> = {
-  harmful:          { bg: "rgba(239,68,68,0.12)",   text: "#ef4444", label: "Harmful content" },
-  hallucination:    { bg: "rgba(245,158,11,0.12)",  text: "#f59e0b", label: "Hallucination" },
-  abuse:            { bg: "rgba(220,38,38,0.12)",   text: "#dc2626", label: "Abuse" },
-  policy_violation: { bg: "rgba(249,115,22,0.12)",  text: "#f97316", label: "Policy violation" },
-  wrong_answer:     { bg: "rgba(139,92,246,0.12)",  text: "#8b5cf6", label: "Wrong answer" },
-  user_frustration: { bg: "rgba(99,102,241,0.12)",  text: "#6366f1", label: "User frustration" },
-};
+function severityBadgeClass(severity: string): string {
+  switch (severity) {
+    case "critical":
+      return "border-red-500/40 bg-red-500/15 text-red-700 dark:text-red-300";
+    case "high":
+      return "border-orange-500/40 bg-orange-500/15 text-orange-700 dark:text-orange-300";
+    case "medium":
+      return "border-amber-500/40 bg-amber-500/15 text-amber-700 dark:text-amber-300";
+    default:
+      return "border-[var(--border)] bg-[var(--background)] text-[var(--muted-foreground)]";
+  }
+}
 
-function relTime(iso: string): string {
-  const diff = Math.floor((Date.now() - new Date(iso).getTime()) / 1000);
-  if (diff < 60) return "just now";
-  if (diff < 3600) return `${Math.floor(diff / 60)}m ago`;
-  if (diff < 86400) return `${Math.floor(diff / 3600)}h ago`;
-  return new Date(iso).toLocaleDateString(undefined, { month: "short", day: "numeric" });
+function statusBadgeClass(status: string): string {
+  switch (status) {
+    case "open":
+      return "border-blue-500/30 bg-blue-500/10 text-blue-700 dark:text-blue-300";
+    case "reviewed":
+      return "border-green-500/30 bg-green-500/10 text-green-700 dark:text-green-300";
+    case "dismissed":
+      return "border-[var(--border)] bg-[var(--background)] text-[var(--muted-foreground)]";
+    case "actioned":
+      return "border-purple-500/30 bg-purple-500/10 text-purple-700 dark:text-purple-300";
+    default:
+      return "border-[var(--border)] bg-[var(--background)] text-[var(--muted-foreground)]";
+  }
 }
 
 export default function AdminRiskPage() {
+  const [summary, setSummary] = useState<RiskSummary | null>(null);
   const [flags, setFlags] = useState<RiskFlag[]>([]);
   const [loading, setLoading] = useState(true);
-  const [resolvingId, setResolvingId] = useState<string | null>(null);
+  const [workingId, setWorkingId] = useState<string | null>(null);
+  const [scanning, setScanning] = useState(false);
+  const [error, setError] = useState("");
+  const [severityFilter, setSeverityFilter] = useState("");
+  const [typeFilter, setTypeFilter] = useState("");
+  const [statusFilter, setStatusFilter] = useState("");
 
-  const load = () => {
+  const load = useCallback(async () => {
     setLoading(true);
-    apiFetch(apiUrl("/api/v1/multi-user/admin/risk/flags"))
-      .then((r) => r.json())
-      .then((d: RiskFlag[]) => setFlags(Array.isArray(d) ? d : []))
-      .catch(() => {})
-      .finally(() => setLoading(false));
-  };
-
-  useEffect(() => { load(); }, []);
-
-  const handleResolve = async (flagId: string) => {
-    setResolvingId(flagId);
+    setError("");
     try {
-      await apiFetch(apiUrl(`/api/v1/multi-user/admin/risk/flags/${flagId}/resolve`), { method: "POST" });
-      setFlags((prev) => prev.filter((f) => f.id !== flagId));
-    } catch {}
-    setResolvingId(null);
-  };
+      const [summaryData, flagData] = await Promise.all([
+        fetchRiskSummary(),
+        fetchRiskFlags({
+          severity: severityFilter || undefined,
+          risk_type: typeFilter || undefined,
+          status: statusFilter || undefined,
+        }),
+      ]);
+      setSummary(summaryData);
+      setFlags(flagData);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Failed to load risk data");
+    } finally {
+      setLoading(false);
+    }
+  }, [severityFilter, statusFilter, typeFilter]);
 
-  const counts = flags.reduce<Record<string, number>>((acc, f) => {
-    acc[f.flag_type] = (acc[f.flag_type] ?? 0) + 1;
-    return acc;
-  }, {});
+  useEffect(() => {
+    void load();
+  }, [load]);
+
+  async function handleReview(flag: RiskFlag) {
+    const note = window.prompt("Review note (optional):", "") ?? "";
+    setWorkingId(flag.id);
+    try {
+      await reviewRiskFlag(flag.id, "reviewed", note);
+      notify("Risk flag marked as reviewed", { tone: "success" });
+      await load();
+    } catch (e) {
+      notify(e instanceof Error ? e.message : "Review failed", { tone: "error" });
+    } finally {
+      setWorkingId(null);
+    }
+  }
+
+  async function handleDismiss(flag: RiskFlag) {
+    if (!window.confirm(`Dismiss ${formatRiskType(flag.risk_type)} flag for ${flag.username || flag.user_id}?`)) {
+      return;
+    }
+    setWorkingId(flag.id);
+    try {
+      await reviewRiskFlag(flag.id, "dismissed");
+      notify("Risk flag dismissed", { tone: "success" });
+      await load();
+    } catch (e) {
+      notify(e instanceof Error ? e.message : "Dismiss failed", { tone: "error" });
+    } finally {
+      setWorkingId(null);
+    }
+  }
+
+  async function handleSuspend(flag: RiskFlag) {
+    const reason = window.prompt(
+      `Suspend ${flag.username || flag.user_id}? Enter reason:`,
+      `Risk flag: ${flag.risk_type}`,
+    );
+    if (!reason) return;
+    setWorkingId(flag.id);
+    try {
+      await suspendUser(flag.user_id, reason);
+      await reviewRiskFlag(flag.id, "actioned", `User suspended: ${reason}`);
+      notify("User suspended", { tone: "success" });
+      await load();
+    } catch (e) {
+      notify(e instanceof Error ? e.message : "Suspend failed", { tone: "error" });
+    } finally {
+      setWorkingId(null);
+    }
+  }
+
+  async function handleScan() {
+    setScanning(true);
+    try {
+      await startRiskScan();
+      notify("Risk scan started in background", { tone: "success" });
+      window.setTimeout(() => void load(), 3000);
+    } catch (e) {
+      notify(e instanceof Error ? e.message : "Scan failed", { tone: "error" });
+    } finally {
+      setScanning(false);
+    }
+  }
+
+  const openSeverity = summary?.open_by_severity;
 
   return (
-    <div className="min-h-screen bg-[var(--background)] px-4 py-8 md:px-8">
-      <div className="mx-auto max-w-5xl">
-        <div className="mb-6 flex items-center justify-between">
-          <div>
-            <h1 className="text-2xl font-bold" style={{ color: "var(--foreground)" }}>
-              Risk Review
-            </h1>
-            <p className="mt-1 text-sm" style={{ color: "var(--muted-foreground)" }}>
-              {flags.length} unresolved flag{flags.length !== 1 ? "s" : ""}
-            </p>
+    <div className="min-h-screen bg-[var(--background)] px-4 py-10">
+      <div className="mx-auto max-w-6xl space-y-6">
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          <div className="flex items-center gap-2">
+            <ShieldAlert size={20} className="text-[var(--primary)]" />
+            <div>
+              <h1 className="text-xl font-semibold text-[var(--foreground)]">Risk Flags</h1>
+              <p className="text-sm text-[var(--muted-foreground)]">
+                Automated detection of suspicious usage, sharing, and trial abuse
+              </p>
+            </div>
           </div>
-          <button onClick={load} disabled={loading}
-            className="flex items-center gap-2 rounded-lg border border-[var(--border)] px-3 py-2 text-sm disabled:opacity-50"
-            style={{ color: "var(--muted-foreground)" }}>
-            <RefreshCw size={14} className={loading ? "animate-spin" : ""} />
-          </button>
+          <div className="flex items-center gap-2">
+            <button
+              onClick={() => void handleScan()}
+              disabled={scanning}
+              className="inline-flex items-center gap-1.5 rounded-lg border border-[var(--border)] px-3 py-1.5 text-sm text-[var(--muted-foreground)] hover:text-[var(--foreground)] disabled:opacity-50"
+            >
+              <ScanSearch size={14} className={scanning ? "animate-spin" : ""} />
+              Run scan
+            </button>
+            <button
+              onClick={() => void load()}
+              disabled={loading}
+              className="inline-flex items-center gap-1.5 rounded-lg border border-[var(--border)] px-3 py-1.5 text-sm text-[var(--muted-foreground)] hover:text-[var(--foreground)] disabled:opacity-50"
+            >
+              <RefreshCw size={14} className={loading ? "animate-spin" : ""} />
+              Refresh
+            </button>
+          </div>
         </div>
 
-        {/* Summary badges */}
-        {Object.keys(counts).length > 0 && (
-          <div className="mb-5 flex flex-wrap gap-2">
-            {Object.entries(counts).map(([type, count]) => {
-              const style = FLAG_STYLES[type] ?? { bg: "var(--muted)", text: "var(--muted-foreground)", label: type };
-              return (
-                <span key={type} className="rounded-full px-3 py-1 text-xs font-medium"
-                  style={{ background: style.bg, color: style.text }}>
-                  {style.label}: {count}
-                </span>
-              );
-            })}
+        {loading && !summary ? (
+          <div className="flex items-center gap-2 rounded-2xl border border-[var(--border)] bg-[var(--card)] p-8 text-sm text-[var(--muted-foreground)]">
+            <Loader2 size={16} className="animate-spin" />
+            Loading risk flags…
           </div>
-        )}
-
-        {loading ? (
-          <div className="space-y-3">
-            {Array.from({ length: 5 }).map((_, i) => (
-              <div key={i} className="h-20 animate-pulse rounded-2xl"
-                style={{ background: "var(--muted)" }} />
-            ))}
-          </div>
-        ) : flags.length === 0 ? (
-          <div className="rounded-2xl border border-[var(--border)] bg-[var(--card)] p-12 text-center shadow-sm">
-            <CheckCircle size={32} className="mx-auto mb-3" style={{ color: "#22c55e" }} />
-            <p className="font-medium" style={{ color: "var(--foreground)" }}>No unresolved flags</p>
-            <p className="mt-1 text-sm" style={{ color: "var(--muted-foreground)" }}>
-              All AI conversations are looking clean.
-            </p>
+        ) : error ? (
+          <div className="rounded-2xl border border-[var(--border)] bg-[var(--card)] p-8 text-sm text-[var(--destructive)]">
+            {error}
           </div>
         ) : (
-          <div className="space-y-3">
-            {flags.map((flag) => {
-              const style = FLAG_STYLES[flag.flag_type] ??
-                { bg: "var(--muted)", text: "var(--muted-foreground)", label: flag.flag_type };
-              return (
-                <div key={flag.id}
-                  className="rounded-2xl border border-[var(--border)] bg-[var(--card)] p-4 shadow-sm">
-                  <div className="flex items-start justify-between gap-4">
-                    <div className="min-w-0 flex-1">
-                      <div className="flex flex-wrap items-center gap-2">
-                        <span className="rounded-full px-2.5 py-0.5 text-xs font-medium"
-                          style={{ background: style.bg, color: style.text }}>
-                          {style.label}
-                        </span>
-                        <Link href={`/admin/users/${encodeURIComponent(flag.user_id)}`}
-                          className="text-sm font-medium hover:underline"
-                          style={{ color: "var(--foreground)" }}>
-                          {flag.username}
-                        </Link>
-                        <span className="text-xs" style={{ color: "var(--muted-foreground)" }}>
-                          {relTime(flag.created_at)}
-                        </span>
-                      </div>
-                      {flag.reason && (
-                        <p className="mt-2 text-sm" style={{ color: "var(--muted-foreground)" }}>
-                          {flag.reason}
-                        </p>
-                      )}
-                      <div className="mt-2 flex gap-3">
-                        <Link
-                          href={`/admin/conversations?session=${flag.session_id}&user=${flag.user_id}`}
-                          className="text-xs underline"
-                          style={{ color: "var(--primary)" }}
-                        >
-                          View conversation →
-                        </Link>
-                        <Link
-                          href={`/admin/users/${encodeURIComponent(flag.user_id)}`}
-                          className="text-xs underline"
-                          style={{ color: "var(--primary)" }}
-                        >
-                          View user →
-                        </Link>
-                      </div>
-                    </div>
-                    <button
-                      onClick={() => handleResolve(flag.id)}
-                      disabled={resolvingId === flag.id}
-                      className="shrink-0 rounded-lg px-3 py-1.5 text-xs font-medium transition-all disabled:opacity-50"
-                      style={{ background: "rgba(34,197,94,0.12)", color: "#22c55e" }}
-                    >
-                      {resolvingId === flag.id ? "Resolving…" : "✓ Resolve"}
-                    </button>
-                  </div>
+          <>
+            <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
+              {[
+                { label: "Critical", value: String(openSeverity?.critical ?? 0) },
+                { label: "High", value: String(openSeverity?.high ?? 0) },
+                { label: "Medium", value: String(openSeverity?.medium ?? 0) },
+                { label: "Unreviewed", value: String(summary?.unreviewed ?? 0) },
+              ].map((kpi) => (
+                <div
+                  key={kpi.label}
+                  className="rounded-2xl border border-[var(--border)] bg-[var(--card)] p-5 shadow-sm"
+                >
+                  <p className="text-xs text-[var(--muted-foreground)]">{kpi.label}</p>
+                  <p className="mt-2 text-2xl font-semibold text-[var(--foreground)]">{kpi.value}</p>
                 </div>
-              );
-            })}
-          </div>
+              ))}
+            </div>
+
+            <section className="rounded-2xl border border-[var(--border)] bg-[var(--card)] p-5 shadow-sm">
+              <div className="mb-4 flex flex-wrap items-end gap-3">
+                <div>
+                  <label className="mb-1 block text-xs text-[var(--muted-foreground)]">Severity</label>
+                  <select
+                    value={severityFilter}
+                    onChange={(event) => setSeverityFilter(event.target.value)}
+                    className="rounded-lg border border-[var(--border)] bg-[var(--background)] px-3 py-1.5 text-sm"
+                  >
+                    <option value="">All</option>
+                    <option value="critical">Critical</option>
+                    <option value="high">High</option>
+                    <option value="medium">Medium</option>
+                    <option value="low">Low</option>
+                  </select>
+                </div>
+                <div>
+                  <label className="mb-1 block text-xs text-[var(--muted-foreground)]">Risk type</label>
+                  <select
+                    value={typeFilter}
+                    onChange={(event) => setTypeFilter(event.target.value)}
+                    className="rounded-lg border border-[var(--border)] bg-[var(--background)] px-3 py-1.5 text-sm"
+                  >
+                    <option value="">All</option>
+                    <option value="excessive_usage">Excessive usage</option>
+                    <option value="account_sharing">Account sharing</option>
+                    <option value="trial_abuse">Trial abuse</option>
+                  </select>
+                </div>
+                <div>
+                  <label className="mb-1 block text-xs text-[var(--muted-foreground)]">Status</label>
+                  <select
+                    value={statusFilter}
+                    onChange={(event) => setStatusFilter(event.target.value)}
+                    className="rounded-lg border border-[var(--border)] bg-[var(--background)] px-3 py-1.5 text-sm"
+                  >
+                    <option value="">All</option>
+                    <option value="open">Open</option>
+                    <option value="reviewed">Reviewed</option>
+                    <option value="dismissed">Dismissed</option>
+                    <option value="actioned">Actioned</option>
+                  </select>
+                </div>
+              </div>
+
+              <div className="overflow-x-auto">
+                <table className="w-full min-w-[1100px] text-sm">
+                  <thead>
+                    <tr className="border-b border-[var(--border)] text-left text-xs uppercase tracking-wide text-[var(--muted-foreground)]">
+                      <th className="pb-2 pr-4 font-medium">User</th>
+                      <th className="pb-2 pr-4 font-medium">Risk type</th>
+                      <th className="pb-2 pr-4 font-medium">Severity</th>
+                      <th className="pb-2 pr-4 font-medium">Details</th>
+                      <th className="pb-2 pr-4 font-medium">Time</th>
+                      <th className="pb-2 pr-4 font-medium">Status</th>
+                      <th className="pb-2 font-medium text-right">Actions</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-[var(--border)]">
+                    {flags.map((flag) => (
+                      <tr key={flag.id}>
+                        <td className="py-3 pr-4">
+                          <div className="font-medium text-[var(--foreground)]">
+                            {flag.username || flag.user_id}
+                          </div>
+                          <div className="font-mono text-xs text-[var(--muted-foreground)]">{flag.user_id}</div>
+                        </td>
+                        <td className="py-3 pr-4">
+                          <span className="inline-flex rounded-full border border-[var(--border)] px-2 py-0.5 text-xs font-medium">
+                            {formatRiskType(flag.risk_type)}
+                          </span>
+                        </td>
+                        <td className="py-3 pr-4">
+                          <span
+                            className={`inline-flex rounded-full border px-2 py-0.5 text-xs font-medium capitalize ${severityBadgeClass(flag.severity)}`}
+                          >
+                            {flag.severity}
+                          </span>
+                        </td>
+                        <td className="max-w-xs py-3 pr-4 font-mono text-xs text-[var(--muted-foreground)]">
+                          {formatRiskDetails(flag.details)}
+                        </td>
+                        <td className="py-3 pr-4 text-[var(--muted-foreground)]">
+                          {formatDateTime(flag.created_at)}
+                        </td>
+                        <td className="py-3 pr-4">
+                          <span
+                            className={`inline-flex rounded-full border px-2 py-0.5 text-xs font-medium capitalize ${statusBadgeClass(flag.status)}`}
+                          >
+                            {flag.status}
+                          </span>
+                        </td>
+                        <td className="py-3 text-right">
+                          <div className="flex flex-wrap justify-end gap-1.5">
+                            {flag.status === "open" ? (
+                              <>
+                                <button
+                                  onClick={() => void handleReview(flag)}
+                                  disabled={workingId === flag.id}
+                                  className="rounded-lg border border-[var(--border)] px-2 py-1 text-xs hover:bg-[var(--background)] disabled:opacity-40"
+                                >
+                                  Review
+                                </button>
+                                <button
+                                  onClick={() => void handleDismiss(flag)}
+                                  disabled={workingId === flag.id}
+                                  className="rounded-lg border border-[var(--border)] px-2 py-1 text-xs hover:bg-[var(--background)] disabled:opacity-40"
+                                >
+                                  Dismiss
+                                </button>
+                                <button
+                                  onClick={() => void handleSuspend(flag)}
+                                  disabled={workingId === flag.id}
+                                  className="rounded-lg border border-red-500/30 px-2 py-1 text-xs text-red-700 hover:bg-red-500/10 disabled:opacity-40 dark:text-red-300"
+                                >
+                                  Suspend user
+                                </button>
+                              </>
+                            ) : null}
+                            <Link
+                              href={`/admin/users/${encodeURIComponent(flag.user_id)}`}
+                              className="rounded-lg border border-[var(--border)] px-2 py-1 text-xs hover:bg-[var(--background)]"
+                            >
+                              View user
+                            </Link>
+                          </div>
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+                {flags.length === 0 ? (
+                  <div className="py-10 text-center text-sm text-[var(--muted-foreground)]">
+                    No risk flags match the current filters.
+                  </div>
+                ) : null}
+              </div>
+            </section>
+          </>
         )}
       </div>
     </div>

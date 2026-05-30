@@ -343,15 +343,19 @@ async def voice_session(
             user_id, duration, len(transcript_turns),
         )
         if user_id and user_id not in {"anonymous", "local-admin"}:
-            from aimtutor.services.quota import record_usage
-
             voice_minutes = max(
                 duration / 60.0,
                 (model_audio_seconds + user_audio_seconds) / 60.0,
             )
-            if voice_minutes > 0:
-                with suppress(Exception):
-                    await record_usage(user_id, "voice_minutes", voice_minutes)
+            duration_secs = max(duration, model_audio_seconds + user_audio_seconds)
+            with suppress(Exception):
+                await _log_cost(
+                    user_id=user_id,
+                    model=model,
+                    session_id=session_id,
+                    duration_secs=duration_secs,
+                    voice_minutes=voice_minutes,
+                )
         # Write to L1 memory trace
         if transcript_turns:
             with suppress(Exception):
@@ -545,6 +549,42 @@ async def _run_session(
 
 
 # ── helpers ───────────────────────────────────────────────────────────────
+
+async def _log_cost(
+    *,
+    user_id: str,
+    model: str,
+    session_id: str | None,
+    duration_secs: float,
+    voice_minutes: float,
+) -> None:
+    """Record voice quota usage, audit trail, and AI cost analytics."""
+    from aimtutor.multi_user.audit import log_usage
+    from aimtutor.services.cost_tracker import record_voice_cost
+    from aimtutor.services.quota import record_usage
+
+    if voice_minutes > 0:
+        with suppress(Exception):
+            await record_usage(user_id, "voice_minutes", voice_minutes)
+    with suppress(Exception):
+        log_usage(
+            "voice",
+            model,
+            "gemini_live_session",
+            extra={
+                "duration_secs": round(duration_secs, 2),
+                "voice_minutes": round(voice_minutes, 4),
+                "session_id": session_id,
+            },
+        )
+    with suppress(Exception):
+        await record_voice_cost(
+            user_id,
+            duration_secs,
+            model,
+            session_id=session_id,
+        )
+
 
 async def _build_system_instruction(
     session_id: str | None,

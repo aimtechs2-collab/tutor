@@ -1,63 +1,130 @@
-"""Admin report export endpoints — CSV downloads."""
+"""Admin CSV/JSON business report downloads."""
+
 from __future__ import annotations
 
-import csv
-import io
-from datetime import datetime, timezone
+import asyncio
+from datetime import date, datetime, timezone
 from typing import Any
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, Query
 from fastapi.responses import StreamingResponse
 
-from aimtutor.api.routers.auth import require_finance_admin
+from aimtutor.api.routers.auth import require_admin, require_finance_admin
 from aimtutor.multi_user.identity import list_user_info
+from aimtutor.services.reports import (
+    ACTIVITY_COLUMNS,
+    AI_USAGE_COLUMNS,
+    REVENUE_COLUMNS,
+    USER_COLUMNS,
+    fetch_activity_report_sync,
+    fetch_ai_usage_report_sync,
+    fetch_revenue_report_sync,
+    fetch_users_report_sync,
+    iter_csv,
+)
 
 router = APIRouter()
 
 
-def _csv_response(rows: list[dict[str, Any]], filename: str) -> StreamingResponse:
-    if not rows:
-        rows = [{}]
-    output = io.StringIO()
-    writer = csv.DictWriter(output, fieldnames=list(rows[0].keys()))
-    writer.writeheader()
-    writer.writerows(rows)
-    output.seek(0)
+def _csv_response(rows: list[dict[str, Any]], columns: list[str], filename: str) -> StreamingResponse:
     return StreamingResponse(
-        iter([output.getvalue()]),
+        iter_csv(rows, columns),
         media_type="text/csv",
         headers={"Content-Disposition": f'attachment; filename="{filename}"'},
     )
 
 
+def _legacy_csv_response(rows: list[dict[str, Any]], filename: str) -> StreamingResponse:
+    if not rows:
+        rows = [{}]
+    columns = list(rows[0].keys())
+    return _csv_response(rows, columns, filename)
+
+
 @router.get("/admin/reports/users")
 async def export_users_report(
+    format: str = Query(default="csv", alias="format"),
+    date_from: str | None = Query(default=None),
+    date_to: str | None = Query(default=None),
+    plan: str | None = Query(default=None),
+    status: str | None = Query(default=None),
+    _: Any = Depends(require_admin),
+) -> Any:
+    rows = await asyncio.to_thread(
+        fetch_users_report_sync,
+        date_from=date_from,
+        date_to=date_to,
+        plan=plan,
+        status=status,
+    )
+    if format == "json":
+        return {"rows": rows, "count": len(rows)}
+    today = date.today().isoformat()
+    return _csv_response(rows, USER_COLUMNS, f"users-{today}.csv")
+
+
+@router.get("/admin/reports/revenue")
+async def export_revenue_report(
+    format: str = Query(default="csv", alias="format"),
+    date_from: str | None = Query(default=None),
+    date_to: str | None = Query(default=None),
     _: Any = Depends(require_finance_admin),
-) -> StreamingResponse:
-    """Export all users as CSV."""
-    users = list_user_info()
-    rows = [
-        {
-            "id": u.get("id", ""),
-            "username": u.get("username", ""),
-            "role": u.get("role", "user"),
-            "status": "banned" if u.get("banned") else "suspended" if u.get("disabled") else "active",
-            "joined": str(u.get("created_at", ""))[:10],
-            "suspension_reason": u.get("suspension_reason", ""),
-            "ban_reason": u.get("ban_reason", ""),
-        }
-        for u in users
-    ]
-    date = datetime.now(timezone.utc).strftime("%Y-%m-%d")
-    return _csv_response(rows, f"users-{date}.csv")
+) -> Any:
+    rows = await asyncio.to_thread(
+        fetch_revenue_report_sync,
+        date_from=date_from,
+        date_to=date_to,
+    )
+    if format == "json":
+        return {"rows": rows, "count": len(rows)}
+    today = date.today().isoformat()
+    return _csv_response(rows, REVENUE_COLUMNS, f"revenue-{today}.csv")
+
+
+@router.get("/admin/reports/ai-usage")
+async def export_ai_usage_report(
+    format: str = Query(default="csv", alias="format"),
+    date_from: str | None = Query(default=None),
+    date_to: str | None = Query(default=None),
+    period: str | None = Query(default=None),
+    _: Any = Depends(require_admin),
+) -> Any:
+    rows = await asyncio.to_thread(
+        fetch_ai_usage_report_sync,
+        date_from=date_from,
+        date_to=date_to,
+        period=period,
+    )
+    if format == "json":
+        return {"rows": rows, "count": len(rows)}
+    today = date.today().isoformat()
+    return _csv_response(rows, AI_USAGE_COLUMNS, f"ai-usage-{today}.csv")
+
+
+@router.get("/admin/reports/activity")
+async def export_activity_report(
+    format: str = Query(default="csv", alias="format"),
+    date_from: str | None = Query(default=None),
+    date_to: str | None = Query(default=None),
+    _: Any = Depends(require_admin),
+) -> Any:
+    rows = await asyncio.to_thread(
+        fetch_activity_report_sync,
+        date_from=date_from,
+        date_to=date_to,
+    )
+    if format == "json":
+        return {"rows": rows, "count": len(rows)}
+    today = date.today().isoformat()
+    return _csv_response(rows, ACTIVITY_COLUMNS, f"activity-{today}.csv")
 
 
 @router.get("/admin/reports/plans")
 async def export_plans_report(
     _: Any = Depends(require_finance_admin),
 ) -> StreamingResponse:
-    """Export plan & subscription data as CSV."""
     from aimtutor.services.quota import list_plans
+
     plans = await list_plans()
     rows = [
         {
@@ -73,8 +140,8 @@ async def export_plans_report(
         }
         for p in plans
     ]
-    date = datetime.now(timezone.utc).strftime("%Y-%m-%d")
-    return _csv_response(rows, f"plans-{date}.csv")
+    stamp = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    return _legacy_csv_response(rows, f"plans-{stamp}.csv")
 
 
 @router.get("/admin/reports/usage")
@@ -82,20 +149,23 @@ async def export_usage_report(
     period: str | None = None,
     _: Any = Depends(require_finance_admin),
 ) -> StreamingResponse:
-    """Export usage records for a given month (YYYY-MM, default current)."""
-    import asyncio
     period_key = period or datetime.now(timezone.utc).strftime("%Y-%m")
 
-    def _fetch():
+    def _fetch() -> list[dict[str, Any]]:
         from aimtutor.services.db import connect
+
         with connect() as conn, conn.cursor() as cur:
             cur.execute(
-                "SELECT user_id, metric, SUM(value) AS total "
-                "FROM usage_records WHERE period_key=%s "
-                "GROUP BY user_id, metric ORDER BY user_id, metric",
+                """
+                SELECT user_id, metric, SUM(value) AS total
+                FROM usage_records
+                WHERE period_key = %s
+                GROUP BY user_id, metric
+                ORDER BY user_id, metric
+                """,
                 (period_key,),
             )
-            return [dict(r) for r in cur.fetchall()]
+            return [dict(row) for row in cur.fetchall()]
 
     try:
         records = await asyncio.to_thread(_fetch)
@@ -113,25 +183,25 @@ async def export_usage_report(
         }
         for r in records
     ]
-    return _csv_response(rows, f"usage-{period_key}.csv")
+    return _legacy_csv_response(rows, f"usage-{period_key}.csv")
 
 
 @router.get("/admin/reports/audit")
 async def export_audit_report(
     _: Any = Depends(require_finance_admin),
 ) -> StreamingResponse:
-    """Export the full admin audit log as CSV."""
     from aimtutor.multi_user.audit import get_audit_log
+
     entries = get_audit_log(limit=2000)
     rows = [
         {
-            "timestamp": e.get("ts", ""),
+            "timestamp": e.get("ts", e.get("time", "")),
             "action": e.get("action", ""),
-            "admin_id": e.get("admin_id", ""),
+            "admin_id": e.get("admin_id", e.get("actor_id", "")),
             "target_user_id": e.get("target_user_id", ""),
             "summary": str(e.get("summary", "")),
         }
         for e in entries
     ]
-    date = datetime.now(timezone.utc).strftime("%Y-%m-%d")
-    return _csv_response(rows, f"audit-{date}.csv")
+    stamp = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    return _legacy_csv_response(rows, f"audit-{stamp}.csv")

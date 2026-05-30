@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from typing import Any
 
 
@@ -19,12 +20,53 @@ class UsageTracker:
     ``total_cost_usd`` via the pricing table in ``aimtutor.logging.stats``.
     """
 
-    def __init__(self, *, model: str | None = None) -> None:
+    def __init__(
+        self,
+        *,
+        model: str | None = None,
+        capability: str = "",
+        session_id: str | None = None,
+    ) -> None:
         self.prompt_tokens: int = 0
         self.completion_tokens: int = 0
         self.total_tokens: int = 0
         self.calls: int = 0
         self.model: str | None = model
+        self.capability: str = capability
+        self.session_id: str | None = session_id
+
+    def _schedule_llm_cost_record(self, input_tokens: int, output_tokens: int) -> None:
+        if input_tokens <= 0 and output_tokens <= 0:
+            return
+        try:
+            from aimtutor.multi_user.context import get_current_user
+            from aimtutor.services.cost_tracker import record_llm_cost
+
+            capability = self.capability or "llm"
+            model = self.model or "unknown"
+            session_id = self.session_id
+
+            async def _task() -> None:
+                try:
+                    user = get_current_user()
+                    user_id = str(getattr(user, "id", "") or "")
+                    if not user_id:
+                        return
+                    await record_llm_cost(
+                        user_id,
+                        capability,
+                        model,
+                        input_tokens,
+                        output_tokens,
+                        session_id=session_id,
+                    )
+                except Exception:
+                    return
+
+            loop = asyncio.get_running_loop()
+            loop.create_task(_task())
+        except Exception:
+            return
 
     def add_from_response(self, response_or_usage: Any) -> None:
         usage = getattr(response_or_usage, "usage", None) or response_or_usage
@@ -36,6 +78,7 @@ class UsageTracker:
             self.completion_tokens += completion
             self.total_tokens += total
             self.calls += 1
+            self._schedule_llm_cost_record(prompt, completion)
 
     def add_estimated(self, *, input_chars: int, output_chars: int) -> None:
         est_input = int(input_chars / 3.5)
@@ -44,6 +87,7 @@ class UsageTracker:
         self.completion_tokens += est_output
         self.total_tokens += est_input + est_output
         self.calls += 1
+        self._schedule_llm_cost_record(est_input, est_output)
 
     def add_usage(
         self,

@@ -3,62 +3,70 @@
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import {
+  Activity,
+  ArrowLeft,
+  BarChart2,
+  Bell,
   BookOpen,
-  ClipboardList,
+  Bot,
+  BrainCircuit,
   CreditCard,
-  GraduationCap,
+  FileDown,
+  IndianRupee,
   LayoutDashboard,
   LifeBuoy,
   MessageSquareWarning,
+  ScrollText,
   ShieldAlert,
-  UserCircle2,
+  TrendingUp,
   Users,
+  Zap,
 } from "lucide-react";
 import {
   canAccessSection,
   type AdminSection,
 } from "@/lib/admin-sections";
 
-const NAV_GROUPS = [
+type NavItem = {
+  href: string;
+  label: string;
+  section: AdminSection;
+  icon: React.ComponentType<{ size?: number; strokeWidth?: number; className?: string }>;
+};
+
+type NavGroup = {
+  label: string;
+  items: NavItem[];
+};
+
+const NAV_GROUPS: NavGroup[] = [
   {
-    label: null,
+    label: "Overview",
     items: [
-      {
-        href: "/admin",
-        label: "Overview",
-        section: "overview" as AdminSection,
-        icon: LayoutDashboard,
-      },
-      { href: "/admin/users", label: "Users", section: "users" as AdminSection, icon: Users },
-      {
-        href: "/admin/plans",
-        label: "Plans",
-        section: "billing" as AdminSection,
-        icon: CreditCard,
-      },
+      { href: "/admin", label: "Overview", section: "overview", icon: LayoutDashboard },
+      { href: "/admin/intelligence", label: "Intelligence", section: "overview", icon: BrainCircuit },
     ],
   },
   {
-    label: "Operations",
+    label: "Users",
     items: [
-      {
-        href: "/admin/reports",
-        label: "Reports",
-        section: "reports" as AdminSection,
-        icon: ClipboardList,
-      },
-      {
-        href: "/admin/audit",
-        label: "Audit Log",
-        section: "audit" as AdminSection,
-        icon: ShieldAlert,
-      },
-      {
-        href: "/admin/support",
-        label: "Support",
-        section: "support" as AdminSection,
-        icon: LifeBuoy,
-      },
+      { href: "/admin/users", label: "All Users", section: "users", icon: Users },
+      { href: "/admin/risk", label: "Risk Flags", section: "risk", icon: ShieldAlert },
+    ],
+  },
+  {
+    label: "Subscriptions",
+    items: [
+      { href: "/admin/plans", label: "Plans", section: "billing", icon: CreditCard },
+      { href: "/admin/billing", label: "Billing & Payments", section: "billing", icon: IndianRupee },
+      { href: "/admin/billing/costs", label: "AI Costs", section: "billing", icon: BarChart2 },
+    ],
+  },
+  {
+    label: "Content",
+    items: [
+      { href: "/admin/courses", label: "Courses", section: "courses", icon: BookOpen },
+      { href: "/admin/tutor-personas", label: "AI Tutors", section: "tutor-personas", icon: Bot },
     ],
   },
   {
@@ -67,35 +75,32 @@ const NAV_GROUPS = [
       {
         href: "/admin/conversations",
         label: "Conversations",
-        section: "conversations" as AdminSection,
+        section: "conversations",
         icon: MessageSquareWarning,
-      },
-      {
-        href: "/admin/risk",
-        label: "Risk Review",
-        section: "risk" as AdminSection,
-        icon: ShieldAlert,
       },
     ],
   },
   {
-    label: "Tutor Ops",
+    label: "Operations",
     items: [
-      {
-        href: "/admin/courses",
-        label: "Courses",
-        section: "courses" as AdminSection,
-        icon: BookOpen,
-      },
-      {
-        href: "/admin/tutor-personas",
-        label: "Tutor Personas",
-        section: "tutor-personas" as AdminSection,
-        icon: UserCircle2,
-      },
+      { href: "/admin/activity", label: "Activity Feed", section: "activity", icon: Activity },
+      { href: "/admin/support", label: "Support", section: "support", icon: LifeBuoy },
+      { href: "/admin/notifications", label: "Notifications", section: "notifications", icon: Bell },
+      { href: "/admin/automation", label: "Automation", section: "automation", icon: Zap },
     ],
   },
-] as const;
+  {
+    label: "Analytics",
+    items: [
+      { href: "/admin/progress", label: "Progress", section: "progress", icon: TrendingUp },
+      { href: "/admin/reports", label: "Reports", section: "reports", icon: FileDown },
+    ],
+  },
+  {
+    label: "System",
+    items: [{ href: "/admin/audit", label: "Audit Log", section: "audit", icon: ScrollText }],
+  },
+];
 
 type AdminSidebarProps = {
   visibleSections?: Set<AdminSection> | null;
@@ -105,13 +110,14 @@ export default function AdminSidebar({ visibleSections = null }: AdminSidebarPro
   const pathname = usePathname();
 
   return (
-    <aside className="flex w-56 shrink-0 flex-col border-r border-[var(--border)] bg-[var(--card)]">
-      <div className="border-b border-[var(--border)] px-4 py-5">
-        <Link href="/" className="text-sm font-semibold text-[var(--foreground)]">
+    <aside className="flex w-56 shrink-0 flex-col border-r border-zinc-800 bg-zinc-950 text-zinc-100">
+      <div className="border-b border-zinc-800 px-4 py-5">
+        <Link href="/" className="text-sm font-semibold text-zinc-50">
           AIMTutor Admin
         </Link>
-        <p className="mt-1 text-xs text-[var(--muted-foreground)]">SaaS controls</p>
+        <p className="mt-1 text-xs text-zinc-400">SaaS controls</p>
       </div>
+
       <nav className="flex flex-1 flex-col gap-4 overflow-y-auto p-3">
         {NAV_GROUPS.map((group) => {
           const items = group.items.filter((item) =>
@@ -121,13 +127,11 @@ export default function AdminSidebar({ visibleSections = null }: AdminSidebarPro
             return null;
           }
           return (
-            <div key={group.label ?? "main"}>
-              {group.label ? (
-                <p className="mb-1 px-3 text-[10px] font-semibold uppercase tracking-wider text-[var(--muted-foreground)]">
-                  {group.label}
-                </p>
-              ) : null}
-              <div className="flex flex-col gap-1">
+            <div key={group.label}>
+              <p className="mb-1 px-3 text-[10px] font-semibold uppercase tracking-wider text-zinc-500">
+                {group.label}
+              </p>
+              <div className="flex flex-col gap-0.5">
                 {items.map(({ href, label, icon: Icon }) => {
                   const active =
                     href === "/admin"
@@ -137,13 +141,13 @@ export default function AdminSidebar({ visibleSections = null }: AdminSidebarPro
                     <Link
                       key={href}
                       href={href}
-                      className={`flex items-center gap-2 rounded-lg px-3 py-2 text-sm transition-colors ${
+                      className={`flex items-center gap-2 border-l-2 py-2 pl-[10px] pr-3 text-sm transition-colors ${
                         active
-                          ? "bg-[color-mix(in_srgb,var(--primary)_12%,var(--card))] font-medium text-[var(--primary)]"
-                          : "text-[var(--muted-foreground)] hover:bg-[var(--background)] hover:text-[var(--foreground)]"
+                          ? "border-indigo-400 bg-zinc-900 font-medium text-zinc-50"
+                          : "border-transparent text-zinc-400 hover:border-zinc-700 hover:bg-zinc-900/60 hover:text-zinc-100"
                       }`}
                     >
-                      <Icon size={16} />
+                      <Icon size={16} strokeWidth={1.75} />
                       {label}
                     </Link>
                   );
@@ -153,13 +157,14 @@ export default function AdminSidebar({ visibleSections = null }: AdminSidebarPro
           );
         })}
       </nav>
-      <div className="border-t border-[var(--border)] p-3">
+
+      <div className="border-t border-zinc-800 p-3">
         <Link
           href="/dashboard"
-          className="flex items-center gap-2 rounded-lg px-3 py-2 text-xs text-[var(--muted-foreground)] hover:bg-[var(--background)] hover:text-[var(--foreground)]"
+          className="flex items-center gap-2 rounded-lg px-3 py-2 text-xs text-zinc-400 transition-colors hover:bg-zinc-900 hover:text-zinc-100"
         >
-          <GraduationCap size={14} />
-          User dashboard
+          <ArrowLeft size={14} />
+          Back to App
         </Link>
       </div>
     </aside>

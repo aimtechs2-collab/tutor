@@ -1,165 +1,168 @@
 "use client";
 
 import { useState } from "react";
-import { Download, FileSpreadsheet, Users, BarChart2, ScrollText } from "lucide-react";
-import { apiUrl } from "@/lib/api";
+import { Download, FileDown, Loader2 } from "lucide-react";
+import { notify } from "@/lib/notifications";
+import { downloadReport } from "@/lib/reports-api";
 
-interface Report {
-  id: string;
+type ReportKind = "users" | "revenue" | "ai-usage" | "activity";
+
+interface ReportCardProps {
   title: string;
   description: string;
-  endpoint: string;
-  icon: React.ElementType;
-  params?: { name: string; label: string; type: string; placeholder?: string }[];
+  kind: ReportKind;
+  children?: React.ReactNode;
 }
 
-const REPORTS: Report[] = [
-  {
-    id: "users",
-    title: "User Report",
-    description: "All registered users with role, status, join date, and suspension details.",
-    endpoint: "/api/v1/admin/reports/users",
-    icon: Users,
-  },
-  {
-    id: "plans",
-    title: "Plans & Subscriptions",
-    description: "All subscription plans with active user counts and pricing.",
-    endpoint: "/api/v1/admin/reports/plans",
-    icon: FileSpreadsheet,
-  },
-  {
-    id: "usage",
-    title: "Usage Report",
-    description: "AI chat, voice, quiz, and KB upload usage per user for a given month.",
-    endpoint: "/api/v1/admin/reports/usage",
-    icon: BarChart2,
-    params: [
-      { name: "period", label: "Month (YYYY-MM)", type: "text", placeholder: new Date().toISOString().slice(0, 7) },
-    ],
-  },
-  {
-    id: "audit",
-    title: "Audit Log Export",
-    description: "Full history of admin actions — suspensions, plan changes, role updates.",
-    endpoint: "/api/v1/admin/reports/audit",
-    icon: ScrollText,
-  },
-];
+function ReportCard({ title, description, kind, children }: ReportCardProps) {
+  const [downloading, setDownloading] = useState(false);
+  const [dateFrom, setDateFrom] = useState("");
+  const [dateTo, setDateTo] = useState("");
+  const [plan, setPlan] = useState("");
+  const [status, setStatus] = useState("");
+  const [period, setPeriod] = useState("");
 
-export default function AdminReportsPage() {
-  const [params, setParams] = useState<Record<string, Record<string, string>>>({});
-  const [downloading, setDownloading] = useState<string | null>(null);
-
-  const handleDownload = async (report: Report) => {
-    setDownloading(report.id);
+  async function handleDownload() {
+    setDownloading(true);
     try {
-      const reportParams = params[report.id] ?? {};
-      const query = new URLSearchParams(
-        Object.entries(reportParams).filter(([, v]) => v.trim())
-      ).toString();
-      const url = apiUrl(`${report.endpoint}${query ? `?${query}` : ""}`);
-      const res = await fetch(url, { credentials: "include" });
-      if (!res.ok) throw new Error("Export failed");
-      const blob = await res.blob();
-      const objectUrl = URL.createObjectURL(blob);
-      const a = document.createElement("a");
-      const date = new Date().toISOString().slice(0, 10);
-      a.href = objectUrl;
-      a.download = `${report.id}-${date}.csv`;
-      a.click();
-      URL.revokeObjectURL(objectUrl);
+      await downloadReport(kind, {
+        date_from: dateFrom || undefined,
+        date_to: dateTo || undefined,
+        plan: plan || undefined,
+        status: status || undefined,
+        period: period || undefined,
+      });
+      notify("Report downloaded", { tone: "success" });
     } catch (e) {
-      alert(`Export failed: ${e instanceof Error ? e.message : "unknown error"}`);
+      notify(e instanceof Error ? e.message : "Download failed", { tone: "error" });
     } finally {
-      setDownloading(null);
+      setDownloading(false);
     }
-  };
+  }
 
   return (
-    <div className="min-h-screen bg-[var(--background)] px-4 py-8 md:px-8">
-      <div className="mx-auto max-w-4xl">
-        <div className="mb-8">
-          <h1 className="text-2xl font-bold" style={{ color: "var(--foreground)" }}>
-            Reports
-          </h1>
-          <p className="mt-1 text-sm" style={{ color: "var(--muted-foreground)" }}>
-            Export platform data as CSV for analysis or reporting
-          </p>
+    <div className="rounded-xl border border-[var(--border)] bg-[var(--card)] p-5">
+      <div className="flex items-start gap-3">
+        <div className="rounded-lg bg-[color-mix(in_srgb,var(--primary)_12%,var(--card))] p-2 text-[var(--primary)]">
+          <FileDown size={18} />
         </div>
-
-        <div className="grid gap-4 sm:grid-cols-2">
-          {REPORTS.map((report) => {
-            const Icon = report.icon;
-            const isDownloading = downloading === report.id;
-            return (
-              <div
-                key={report.id}
-                className="rounded-2xl border border-[var(--border)] bg-[var(--card)] p-5 shadow-sm"
+        <div className="min-w-0 flex-1">
+          <h2 className="font-semibold text-[var(--foreground)]">{title}</h2>
+          <p className="mt-1 text-sm text-[var(--muted-foreground)]">{description}</p>
+        </div>
+      </div>
+      <div className="mt-4 grid gap-3 sm:grid-cols-2">
+        <div>
+          <label className="text-xs text-[var(--muted-foreground)]">From</label>
+          <input
+            type="date"
+            value={dateFrom}
+            onChange={(e) => setDateFrom(e.target.value)}
+            className="mt-1 w-full rounded-lg border border-[var(--border)] bg-[var(--background)] px-3 py-1.5 text-sm"
+          />
+        </div>
+        <div>
+          <label className="text-xs text-[var(--muted-foreground)]">To</label>
+          <input
+            type="date"
+            value={dateTo}
+            onChange={(e) => setDateTo(e.target.value)}
+            className="mt-1 w-full rounded-lg border border-[var(--border)] bg-[var(--background)] px-3 py-1.5 text-sm"
+          />
+        </div>
+        {kind === "users" ? (
+          <>
+            <div>
+              <label className="text-xs text-[var(--muted-foreground)]">Plan</label>
+              <select
+                value={plan}
+                onChange={(e) => setPlan(e.target.value)}
+                className="mt-1 w-full rounded-lg border border-[var(--border)] bg-[var(--background)] px-3 py-1.5 text-sm"
               >
-                <div className="mb-3 flex items-start gap-3">
-                  <div
-                    className="rounded-lg p-2"
-                    style={{ background: "color-mix(in srgb, var(--primary) 12%, var(--card))" }}
-                  >
-                    <Icon size={16} style={{ color: "var(--primary)" }} />
-                  </div>
-                  <div>
-                    <h3 className="font-semibold" style={{ color: "var(--foreground)" }}>
-                      {report.title}
-                    </h3>
-                    <p className="mt-0.5 text-xs" style={{ color: "var(--muted-foreground)" }}>
-                      {report.description}
-                    </p>
-                  </div>
-                </div>
+                <option value="">All plans</option>
+                <option value="free">Free</option>
+                <option value="basic">Basic</option>
+                <option value="pro">Pro</option>
+                <option value="premium">Premium</option>
+              </select>
+            </div>
+            <div>
+              <label className="text-xs text-[var(--muted-foreground)]">Status</label>
+              <select
+                value={status}
+                onChange={(e) => setStatus(e.target.value)}
+                className="mt-1 w-full rounded-lg border border-[var(--border)] bg-[var(--background)] px-3 py-1.5 text-sm"
+              >
+                <option value="">All statuses</option>
+                <option value="active">Active</option>
+                <option value="disabled">Disabled</option>
+                <option value="suspended">Suspended</option>
+                <option value="banned">Banned</option>
+              </select>
+            </div>
+          </>
+        ) : null}
+        {kind === "ai-usage" ? (
+          <div className="sm:col-span-2">
+            <label className="text-xs text-[var(--muted-foreground)]">Billing period (YYYY-MM)</label>
+            <input
+              type="month"
+              value={period}
+              onChange={(e) => setPeriod(e.target.value)}
+              className="mt-1 w-full rounded-lg border border-[var(--border)] bg-[var(--background)] px-3 py-1.5 text-sm"
+            />
+          </div>
+        ) : null}
+        {children}
+      </div>
+      <button
+        type="button"
+        disabled={downloading}
+        onClick={() => void handleDownload()}
+        className="mt-4 inline-flex items-center gap-1.5 rounded-lg bg-[var(--primary)] px-4 py-2 text-sm font-medium text-white disabled:opacity-60"
+      >
+        {downloading ? <Loader2 size={14} className="animate-spin" /> : <Download size={14} />}
+        Download CSV
+      </button>
+    </div>
+  );
+}
 
-                {report.params && (
-                  <div className="mb-3 space-y-2">
-                    {report.params.map((p) => (
-                      <div key={p.name}>
-                        <label className="mb-1 block text-xs font-medium"
-                          style={{ color: "var(--muted-foreground)" }}>
-                          {p.label}
-                        </label>
-                        <input
-                          type={p.type}
-                          placeholder={p.placeholder}
-                          value={params[report.id]?.[p.name] ?? ""}
-                          onChange={(e) =>
-                            setParams((prev) => ({
-                              ...prev,
-                              [report.id]: { ...prev[report.id], [p.name]: e.target.value },
-                            }))
-                          }
-                          className="w-full rounded-lg border border-[var(--border)] bg-[var(--background)] px-3 py-1.5 text-sm outline-none"
-                          style={{ color: "var(--foreground)" }}
-                        />
-                      </div>
-                    ))}
-                  </div>
-                )}
-
-                <button
-                  onClick={() => handleDownload(report)}
-                  disabled={isDownloading}
-                  className="flex w-full items-center justify-center gap-2 rounded-lg px-3 py-2 text-sm font-medium transition-all disabled:opacity-50"
-                  style={{
-                    background: "var(--primary)",
-                    color: "var(--primary-foreground)",
-                  }}
-                >
-                  <Download size={14} className={isDownloading ? "animate-bounce" : ""} />
-                  {isDownloading ? "Downloading…" : "Download CSV"}
-                </button>
-              </div>
-            );
-          })}
+export default function AdminReportsPage() {
+  return (
+    <div className="min-h-screen bg-[var(--background)] px-4 py-10">
+      <div className="mx-auto max-w-5xl space-y-6">
+        <div className="flex items-center gap-2">
+          <FileDown size={20} className="text-[var(--primary)]" />
+          <div>
+            <h1 className="text-xl font-semibold text-[var(--foreground)]">Reports</h1>
+            <p className="text-sm text-[var(--muted-foreground)]">
+              Export business data as CSV for finance and leadership
+            </p>
+          </div>
         </div>
-
-        <p className="mt-6 text-center text-xs" style={{ color: "var(--muted-foreground)" }}>
-          Reports are generated live and reflect the current state of the database.
-        </p>
+        <div className="grid gap-4 md:grid-cols-2">
+          <ReportCard
+            kind="users"
+            title="User Report"
+            description="Accounts with plan, status, sessions, quiz usage, voice minutes, and monthly AI cost."
+          />
+          <ReportCard
+            kind="revenue"
+            title="Revenue Report"
+            description="Payment history with user, plan, amount, and status."
+          />
+          <ReportCard
+            kind="ai-usage"
+            title="AI Usage Report"
+            description="Per-user capability and model costs with token totals."
+          />
+          <ReportCard
+            kind="activity"
+            title="Activity Report"
+            description="Recent login events with IP and country for security review."
+          />
+        </div>
       </div>
     </div>
   );

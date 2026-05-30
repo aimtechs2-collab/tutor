@@ -1,4 +1,5 @@
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, suppress
+import asyncio
 import logging
 from pathlib import Path
 
@@ -188,7 +189,39 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         logger.warning(f"Default plan seed failed: {e}")
 
+    async def _periodic_risk_scan() -> None:
+        while True:
+            await asyncio.sleep(4 * 3600)
+            with suppress(Exception):
+                from aimtutor.services.risk_agent import run_risk_scan
+
+                created = await run_risk_scan()
+                if created:
+                    logger.info("Periodic risk scan created %d new flag(s)", len(created))
+
+    risk_scan_task = asyncio.create_task(_periodic_risk_scan())
+
+    async def _periodic_automation_cycle() -> None:
+        while True:
+            await asyncio.sleep(3600)
+            with suppress(Exception):
+                from aimtutor.services.automation_engine import run_automation_cycle
+
+                actions_taken = await run_automation_cycle()
+                if actions_taken:
+                    logger.info("Automation cycle executed %d action(s)", actions_taken)
+
+    automation_task = asyncio.create_task(_periodic_automation_cycle())
+
     yield
+
+    automation_task.cancel()
+    with suppress(asyncio.CancelledError):
+        await automation_task
+
+    risk_scan_task.cancel()
+    with suppress(asyncio.CancelledError):
+        await risk_scan_task
 
     # Execute on shutdown
     logger.info("Application shutdown")
@@ -305,17 +338,41 @@ from aimtutor.api.routers import (
 )
 from aimtutor.multi_user.router import router as multi_user_router  # noqa: E402
 from aimtutor.api.routers.gemini_live import router as gemini_live_router  # noqa: E402
-from aimtutor.api.routers.quotas import router as quotas_router
-from aimtutor.api.routers.reports import router as reports_router  # noqa: E402  # noqa: E402
+from aimtutor.api.routers.quotas import router as quotas_router  # noqa: E402
+from aimtutor.api.routers.billing import router as billing_router  # noqa: E402
+from aimtutor.api.routers.admin_agent import router as admin_agent_router  # noqa: E402
+from aimtutor.api.routers.automation import router as automation_router  # noqa: E402
+from aimtutor.api.routers.courses import router as courses_router  # noqa: E402
+from aimtutor.api.routers.tutor_personas import router as tutor_personas_router  # noqa: E402
+from aimtutor.api.routers.notifications import router as notifications_router  # noqa: E402
+from aimtutor.api.routers.support import router as support_router  # noqa: E402
+from aimtutor.api.routers.reports import router as reports_router  # noqa: E402
 
 # Auth router is public — login/logout/register/status require no token
 app.include_router(auth.router, prefix="/api/v1/auth", tags=["auth"])
+app.include_router(billing_router, prefix="", tags=["billing"])
+app.include_router(admin_agent_router, prefix="", tags=["admin-agent"])
+app.include_router(
+    automation_router,
+    prefix="/api/v1/admin/automation",
+    tags=["automation"],
+)
+app.include_router(
+    tutor_personas_router,
+    prefix="/api/v1/admin/tutor-personas",
+    tags=["tutor-personas"],
+)
 
 # All other routers require a valid session when AUTH_ENABLED=true.
 # require_auth is a no-op when AUTH_ENABLED=false, so this is safe for local use.
 from aimtutor.api.routers.auth import require_auth  # noqa: E402
 
 _auth = [Depends(require_auth)]
+
+app.include_router(courses_router, prefix="/api/v1", tags=["courses"], dependencies=_auth)
+app.include_router(notifications_router, prefix="/api/v1", tags=["notifications"], dependencies=_auth)
+app.include_router(support_router, prefix="/api/v1", tags=["support"], dependencies=_auth)
+app.include_router(reports_router, prefix="/api/v1", tags=["reports"], dependencies=_auth)
 
 app.include_router(
     multi_user_router,
@@ -335,7 +392,6 @@ app.include_router(
     dashboard.router, prefix="/api/v1/dashboard", tags=["dashboard"], dependencies=_auth
 )
 app.include_router(quotas_router, prefix="/api/v1/quota", tags=["quota"], dependencies=_auth)
-app.include_router(reports_router, prefix="/api/v1", tags=["reports"])
 app.include_router(
     co_writer.router, prefix="/api/v1/co_writer", tags=["co_writer"], dependencies=_auth
 )

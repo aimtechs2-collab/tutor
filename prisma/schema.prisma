@@ -208,3 +208,297 @@ model FlaggedConversation {
   @@index([flagType, resolved])
   @@map("flagged_conversations")
 }
+
+model Payment {
+  id                String   @id @default(cuid())
+  userId            String   @map("user_id")
+  planId            String   @map("plan_id")
+  razorpayOrderId   String   @unique @map("razorpay_order_id")
+  razorpayPaymentId String?  @map("razorpay_payment_id")
+  amount            Int
+  currency          String   @default("INR")
+  status            String   @default("created")
+  periodMonths      Int      @default(1) @map("period_months")
+  createdAt         DateTime @default(now()) @map("created_at")
+  updatedAt         DateTime @updatedAt @map("updated_at")
+
+  @@index([userId])
+  @@index([status])
+  @@index([createdAt(sort: Desc)])
+  @@map("payments")
+}
+
+model Subscription {
+  id                 String   @id @default(cuid())
+  userId             String   @unique @map("user_id")
+  planId             String   @map("plan_id")
+  status             String   @default("active")
+  currentPeriodStart DateTime @map("current_period_start")
+  currentPeriodEnd   DateTime @map("current_period_end")
+  cancelAtPeriodEnd  Boolean  @default(false) @map("cancel_at_period_end")
+  createdAt          DateTime @default(now()) @map("created_at")
+  updatedAt          DateTime @updatedAt @map("updated_at")
+
+  @@index([planId])
+  @@index([status])
+  @@map("subscriptions")
+}
+
+model AiCostRecord {
+  id                String   @id @default(cuid())
+  userId            String   @map("user_id")
+  capability        String
+  model             String
+  inputTokens       Int      @default(0) @map("input_tokens")
+  outputTokens      Int      @default(0) @map("output_tokens")
+  audioDurationSecs Float    @default(0) @map("audio_duration_secs")
+  estimatedCostUsd  Float    @map("estimated_cost_usd")
+  periodKey         String   @map("period_key")
+  sessionId         String?  @map("session_id")
+  createdAt         DateTime @default(now()) @map("created_at")
+
+  @@index([userId, periodKey])
+  @@index([periodKey])
+  @@index([capability])
+  @@map("ai_cost_records")
+}
+
+model UserRiskFlag {
+  id         String   @id @default(cuid())
+  userId     String   @map("user_id")
+  riskType   String   @map("risk_type")
+  severity   String
+  details    Json     @default("{}")
+  status     String   @default("open")
+  reviewedBy String?  @map("reviewed_by")
+  reviewNote String   @default("") @map("review_note")
+  createdAt  DateTime @default(now()) @map("created_at")
+  updatedAt  DateTime @updatedAt @map("updated_at")
+
+  @@index([userId, riskType, status])
+  @@index([severity, status])
+  @@index([riskType, status])
+  @@map("user_risk_flags")
+}
+
+model UserLoginEvent {
+  id        String   @id @default(cuid())
+  userId    String   @map("user_id")
+  ipAddress String   @map("ip_address")
+  userAgent String   @default("") @map("user_agent")
+  country   String?
+  city      String?
+  success   Boolean  @default(true)
+  createdAt DateTime @default(now()) @map("created_at")
+
+  @@index([userId, createdAt(sort: Desc)])
+  @@index([ipAddress])
+  @@map("user_login_events")
+}
+
+model AutomationRule {
+  id          String    @id @default(cuid())
+  name        String
+  description String    @default("")
+  enabled     Boolean   @default(true)
+  trigger     Json
+  actions     Json
+  lastRunAt   DateTime? @map("last_run_at")
+  runCount    Int       @default(0) @map("run_count")
+  createdBy   String    @map("created_by")
+  createdAt   DateTime  @default(now()) @map("created_at")
+  updatedAt   DateTime  @updatedAt @map("updated_at")
+
+  @@index([enabled])
+  @@index([createdAt(sort: Desc)])
+  @@map("automation_rules")
+}
+
+model AutomationLog {
+  id        String   @id @default(cuid())
+  ruleId    String   @map("rule_id")
+  userId    String?  @map("user_id")
+  triggered Boolean  @default(false)
+  actions   Json     @default("[]")
+  success   Boolean  @default(false)
+  error     String   @default("")
+  createdAt DateTime @default(now()) @map("created_at")
+
+  @@index([ruleId, createdAt(sort: Desc)])
+  @@index([userId])
+  @@map("automation_logs")
+}
+
+model Course {
+  id           String             @id @default(cuid())
+  slug         String             @unique
+  title        String
+  description  String             @default("")
+  isPublished  Boolean            @default(false) @map("is_published")
+  requiredPlan String             @default("free") @map("required_plan")
+  sortOrder    Int                @default(0) @map("sort_order")
+  createdBy    String             @map("created_by")
+  createdAt    DateTime           @default(now()) @map("created_at")
+  updatedAt    DateTime           @updatedAt @map("updated_at")
+  modules      Module[]
+  enrollments  CourseEnrollment[]
+
+  @@index([isPublished, sortOrder])
+  @@map("courses")
+}
+
+model Module {
+  id        String   @id @default(cuid())
+  courseId  String   @map("course_id")
+  title     String
+  sortOrder Int      @default(0) @map("sort_order")
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+  course    Course   @relation(fields: [courseId], references: [id], onDelete: Cascade)
+  lessons   Lesson[]
+
+  @@index([courseId, sortOrder])
+  @@map("course_modules")
+}
+
+model Lesson {
+  id          String           @id @default(cuid())
+  moduleId    String           @map("module_id")
+  title       String
+  slug        String
+  content     String           @default("")
+  contentType String           @default("markdown") @map("content_type")
+  sortOrder   Int              @default(0) @map("sort_order")
+  durationMin Int              @default(0) @map("duration_min")
+  createdAt   DateTime         @default(now()) @map("created_at")
+  updatedAt   DateTime         @updatedAt @map("updated_at")
+  module      Module           @relation(fields: [moduleId], references: [id], onDelete: Cascade)
+  progress    LessonProgress[]
+
+  @@unique([moduleId, slug])
+  @@index([moduleId, sortOrder])
+  @@map("lessons")
+}
+
+model CourseEnrollment {
+  id          String    @id @default(cuid())
+  userId      String    @map("user_id")
+  courseId    String    @map("course_id")
+  status      String    @default("active")
+  enrolledAt  DateTime  @default(now()) @map("enrolled_at")
+  completedAt DateTime? @map("completed_at")
+  course      Course    @relation(fields: [courseId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, courseId])
+  @@index([courseId])
+  @@index([userId])
+  @@map("course_enrollments")
+}
+
+model LessonProgress {
+  id          String    @id @default(cuid())
+  userId      String    @map("user_id")
+  lessonId    String    @map("lesson_id")
+  completed   Boolean   @default(false)
+  completedAt DateTime? @map("completed_at")
+  lesson      Lesson    @relation(fields: [lessonId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, lessonId])
+  @@index([userId])
+  @@map("lesson_progress")
+}
+
+model TutorPersona {
+  id                     String               @id @default(cuid())
+  name                   String
+  slug                   String               @unique
+  description            String               @default("")
+  avatarUrl              String               @default("") @map("avatar_url")
+  expertiseTags          Json                 @default("[]") @map("expertise_tags")
+  voiceModel             String               @default("") @map("voice_model")
+  voiceBadge             String               @default("") @map("voice_badge")
+  isPublished            Boolean              @default(false) @map("is_published")
+  behaviorSettings       Json                 @default("{}") @map("behavior_settings")
+  currentPromptVersionId String?              @map("current_prompt_version_id")
+  createdBy              String               @map("created_by")
+  createdAt              DateTime             @default(now()) @map("created_at")
+  updatedAt              DateTime             @updatedAt @map("updated_at")
+  promptVersions         TutorPromptVersion[]
+
+  @@index([isPublished])
+  @@map("tutor_personas")
+}
+
+model TutorPromptVersion {
+  id            String       @id @default(cuid())
+  personaId     String       @map("persona_id")
+  versionNumber Int          @map("version_number")
+  systemPrompt  String       @map("system_prompt")
+  changeNote    String       @default("") @map("change_note")
+  createdBy     String       @map("created_by")
+  createdAt     DateTime     @default(now()) @map("created_at")
+  persona       TutorPersona @relation(fields: [personaId], references: [id], onDelete: Cascade)
+
+  @@unique([personaId, versionNumber])
+  @@index([personaId, createdAt(sort: Desc)])
+  @@map("tutor_prompt_versions")
+}
+
+model Notification {
+  id        String    @id @default(cuid())
+  userId    String    @map("user_id")
+  title     String
+  body      String    @default("")
+  type      String    @default("info")
+  category  String    @default("general")
+  read      Boolean   @default(false)
+  readAt    DateTime? @map("read_at")
+  metadata  Json      @default("{}")
+  createdAt DateTime  @default(now()) @map("created_at")
+
+  @@index([userId, read, createdAt(sort: Desc)])
+  @@map("notifications")
+}
+
+model EmailTemplate {
+  id        String   @id @default(cuid())
+  key       String   @unique
+  name      String
+  subject   String
+  htmlBody  String   @map("html_body")
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  @@map("email_templates")
+}
+
+model SupportTicket {
+  id         String          @id @default(cuid())
+  userId     String          @map("user_id")
+  subject    String
+  status     String          @default("open")
+  priority   String          @default("medium")
+  category   String          @default("general")
+  assignedTo String?         @map("assigned_to")
+  createdAt  DateTime        @default(now()) @map("created_at")
+  updatedAt  DateTime        @updatedAt @map("updated_at")
+  messages   TicketMessage[]
+
+  @@index([userId, createdAt(sort: Desc)])
+  @@index([status, priority])
+  @@map("support_tickets")
+}
+
+model TicketMessage {
+  id         String        @id @default(cuid())
+  ticketId   String        @map("ticket_id")
+  authorId   String        @map("author_id")
+  authorRole String        @default("user") @map("author_role")
+  body       String
+  isInternal Boolean       @default(false) @map("is_internal")
+  createdAt  DateTime      @default(now()) @map("created_at")
+  ticket     SupportTicket @relation(fields: [ticketId], references: [id], onDelete: Cascade)
+
+  @@index([ticketId, createdAt])
+  @@map("ticket_messages")
+}
