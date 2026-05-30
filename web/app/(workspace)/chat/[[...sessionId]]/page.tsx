@@ -1980,6 +1980,8 @@ export default function ChatPage() {
               onSelectCapability={handleSelectCapability}
               onCancelStreaming={cancelStreamingTurn}
               prefillInputRef={prefillInputRef}
+              sessionId={state.sessionId}
+              activeKbName={state.knowledgeBases[0]}
             />
             <div
               aria-hidden="true"

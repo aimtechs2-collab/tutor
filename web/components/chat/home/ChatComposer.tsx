@@ -144,6 +144,8 @@ export default memo(function ChatComposer({
   onCancelStreaming,
   prefillInputRef,
   inputPlaceholder,
+  sessionId,
+  activeKbName,
 }: {
   composerRef: RefObject<HTMLDivElement | null>;
   capMenuRef: RefObject<HTMLDivElement | null>;
@@ -235,6 +237,10 @@ export default memo(function ChatComposer({
   prefillInputRef?: React.MutableRefObject<((text: string) => void) | null>;
   /** Override the composer placeholder (e.g. quiz follow-up). */
   inputPlaceholder?: string;
+  /** Active chat session for Gemini Live voice tutoring. */
+  sessionId?: string | null;
+  /** Primary knowledge base name for voice context. */
+  activeKbName?: string;
 }) {
   const { t } = useTranslation();
   const CapIcon = activeCap.icon;
@@ -790,7 +796,11 @@ export default memo(function ChatComposer({
 
                 {/* Gemini Live voice button */}
                 <VoiceTutorButton
+<<<<<<< Updated upstream
                   sessionId={sessionId || undefined}
+=======
+                  sessionId={sessionId ?? undefined}
+>>>>>>> Stashed changes
                   kbName={activeKbName}
                 />
                 {isStreaming ? (
@@ -862,8 +872,13 @@ function VoiceTutorButton({
 
   useEffect(() => {
     let cancelled = false;
+<<<<<<< Updated upstream
     apiFetch(apiUrl("/api/v1/gemini-live/config"))
       .then((r) => (r.ok ? r.json() : Promise.reject()))
+=======
+    fetch("/api/v1/gemini-live/config", { credentials: "include" })
+      .then((r) => r.json())
+>>>>>>> Stashed changes
       .then((d) => {
         if (!cancelled) setEnabled(Boolean(d.enabled));
       })
@@ -874,6 +889,11 @@ function VoiceTutorButton({
       cancelled = true;
     };
   }, []);
+<<<<<<< Updated upstream
+=======
+
+  if (!enabled) return null;
+>>>>>>> Stashed changes
 
   return (
     <>
