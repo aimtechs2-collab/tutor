@@ -3,6 +3,7 @@
 from contextvars import Token as _CtxToken
 import logging
 
+import bcrypt
 from fastapi import (
     APIRouter,
     Cookie,
@@ -20,6 +21,13 @@ from aimtutor.auth_clerk import (
     clerk_token_payload,
     is_admin as clerk_claims_is_admin,
     verify_clerk_token,
+)
+from aimtutor.multi_user.audit import log_admin_action
+from aimtutor.multi_user.identity import (
+    ban_user,
+    reset_user_password,
+    suspend_user,
+    unsuspend_user,
 )
 from aimtutor.services.config import load_auth_settings
 
@@ -110,6 +118,31 @@ class SetRoleRequest(BaseModel):
         return v
 
 
+class SuspendRequest(BaseModel):
+    """Payload for the POST /users/{user_id}/suspend endpoint."""
+
+    reason: str = ""
+
+
+class BanRequest(BaseModel):
+    """Payload for the POST /users/{user_id}/ban endpoint."""
+
+    reason: str = ""
+
+
+class ResetPasswordRequest(BaseModel):
+    """Payload for the POST /users/{user_id}/reset-password endpoint."""
+
+    new_password: str
+
+    @field_validator("new_password")
+    @classmethod
+    def password_valid(cls, v: str) -> str:
+        if len(v) < 8:
+            raise ValueError("Password must be at least 8 characters")
+        return v
+
+
 class AuthStatusResponse(BaseModel):
     """Response body for the GET /status endpoint."""
 
@@ -129,6 +162,10 @@ class UserInfo(BaseModel):
     role: str
     created_at: str
     disabled: bool = False
+    suspended_at: str = ""
+    suspension_reason: str = ""
+    banned: bool = False
+    ban_reason: str = ""
 
 
 # ---------------------------------------------------------------------------
@@ -630,3 +667,70 @@ async def update_user_role(
         f"Admin '{current.username if current else 'local'}' set '{username}' role to {body.role!r}"
     )
     return {"ok": True, "username": username, "role": body.role}
+
+
+@router.post("/users/{user_id}/suspend", status_code=status.HTTP_200_OK)
+async def suspend_registered_user(
+    user_id: str,
+    body: SuspendRequest,
+    _: TokenPayload = Depends(require_admin),
+) -> dict:
+    """Suspend a user account by id. Requires admin role."""
+    updated = suspend_user(user_id, body.reason)
+    if not updated:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found")
+    log_admin_action(
+        "suspend_user",
+        target_user_id=user_id,
+        summary={"reason": body.reason},
+    )
+    return {"ok": True}
+
+
+@router.post("/users/{user_id}/unsuspend", status_code=status.HTTP_200_OK)
+async def unsuspend_registered_user(
+    user_id: str,
+    _: TokenPayload = Depends(require_admin),
+) -> dict:
+    """Unsuspend a user account by id. Requires admin role."""
+    updated = unsuspend_user(user_id)
+    if not updated:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="User not found or user is banned",
+        )
+    log_admin_action("unsuspend_user", target_user_id=user_id, summary={})
+    return {"ok": True}
+
+
+@router.post("/users/{user_id}/ban", status_code=status.HTTP_200_OK)
+async def ban_registered_user(
+    user_id: str,
+    body: BanRequest,
+    _: TokenPayload = Depends(require_admin),
+) -> dict:
+    """Ban a user account by id. Requires admin role."""
+    updated = ban_user(user_id, body.reason)
+    if not updated:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found")
+    log_admin_action(
+        "ban_user",
+        target_user_id=user_id,
+        summary={"reason": body.reason},
+    )
+    return {"ok": True}
+
+
+@router.post("/users/{user_id}/reset-password", status_code=status.HTTP_200_OK)
+async def reset_registered_user_password(
+    user_id: str,
+    body: ResetPasswordRequest,
+    _: TokenPayload = Depends(require_admin),
+) -> dict:
+    """Reset a user's password by id. Requires admin role."""
+    hashed_pw = bcrypt.hashpw(body.new_password.encode(), bcrypt.gensalt()).decode()
+    updated = reset_user_password(user_id, hashed_pw)
+    if not updated:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found")
+    log_admin_action("reset_password", target_user_id=user_id, summary={})
+    return {"ok": True}

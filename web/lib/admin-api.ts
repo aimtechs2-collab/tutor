@@ -6,6 +6,10 @@ export interface UserRecord {
   role: "admin" | "user";
   created_at: string;
   disabled?: boolean;
+  suspended_at?: string;
+  suspension_reason?: string;
+  banned?: boolean;
+  ban_reason?: string;
 }
 
 export async function listUsers(): Promise<UserRecord[]> {
@@ -73,4 +77,49 @@ export async function createUser(
     throw new Error(message);
   }
   return (await res.json()) as CreatedUser;
+}
+
+export async function getUserById(userId: string): Promise<UserRecord | null> {
+  const users = await listUsers();
+  return users.find((user) => user.id === userId) ?? null;
+}
+
+async function postUserControl(
+  userId: string,
+  action: "suspend" | "unsuspend" | "ban" | "reset-password",
+  body?: Record<string, unknown>,
+): Promise<void> {
+  const res = await apiFetch(
+    apiUrl(`/api/v1/auth/users/${encodeURIComponent(userId)}/${action}`),
+    {
+      method: "POST",
+      headers: body ? { "Content-Type": "application/json" } : undefined,
+      body: body ? JSON.stringify(body) : undefined,
+    },
+  );
+  if (!res.ok) {
+    const data = await res.json().catch(() => ({}));
+    throw new Error(data.detail ?? `Failed to ${action.replace("-", " ")} user`);
+  }
+}
+
+export async function suspendUser(userId: string, reason: string): Promise<void> {
+  await postUserControl(userId, "suspend", { reason });
+}
+
+export async function unsuspendUser(userId: string): Promise<void> {
+  await postUserControl(userId, "unsuspend");
+}
+
+export async function banUser(userId: string, reason: string): Promise<void> {
+  await postUserControl(userId, "ban", { reason });
+}
+
+export async function resetUserPassword(
+  userId: string,
+  newPassword: string,
+): Promise<void> {
+  await postUserControl(userId, "reset-password", {
+    new_password: newPassword,
+  });
 }
