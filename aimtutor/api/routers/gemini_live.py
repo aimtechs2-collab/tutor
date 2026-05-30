@@ -192,6 +192,13 @@ async def create_token(
     if not _rate_check(user_id):
         raise HTTPException(429, "Too many token requests. Please wait a moment.")
 
+    from aimtutor.multi_user.context import get_current_user
+    from aimtutor.services.quota_guard import enforce_quota
+
+    user = get_current_user()
+    if not user.is_admin:
+        await enforce_quota(user_id, "voice_minutes", 1.0)
+
     live_models = await _live_models()
     if body.model not in {m["id"] for m in live_models}:
         raise HTTPException(400, f"Unsupported model: {body.model}")
@@ -335,6 +342,20 @@ async def voice_session(
             "gemini_live.session_end user=%s duration=%.1fs turns=%d",
             user_id, duration, len(transcript_turns),
         )
+        if user_id and user_id not in {"anonymous", "local-admin"}:
+            voice_minutes = max(
+                duration / 60.0,
+                (model_audio_seconds + user_audio_seconds) / 60.0,
+            )
+            duration_secs = max(duration, model_audio_seconds + user_audio_seconds)
+            with suppress(Exception):
+                await _log_cost(
+                    user_id=user_id,
+                    model=model,
+                    session_id=session_id,
+                    duration_secs=duration_secs,
+                    voice_minutes=voice_minutes,
+                )
         # Write to L1 memory trace
         if transcript_turns:
             with suppress(Exception):
@@ -544,6 +565,42 @@ def _sanitize_instruction(text: str) -> str:
     ]:
         text = re.sub(pattern, "[removed]", text)
     return text[:28000]
+
+
+async def _log_cost(
+    *,
+    user_id: str,
+    model: str,
+    session_id: str | None,
+    duration_secs: float,
+    voice_minutes: float,
+) -> None:
+    """Record voice quota usage, audit trail, and AI cost analytics."""
+    from aimtutor.multi_user.audit import log_usage
+    from aimtutor.services.cost_tracker import record_voice_cost
+    from aimtutor.services.quota import record_usage
+
+    if voice_minutes > 0:
+        with suppress(Exception):
+            await record_usage(user_id, "voice_minutes", voice_minutes)
+    with suppress(Exception):
+        log_usage(
+            "voice",
+            model,
+            "gemini_live_session",
+            extra={
+                "duration_secs": round(duration_secs, 2),
+                "voice_minutes": round(voice_minutes, 4),
+                "session_id": session_id,
+            },
+        )
+    with suppress(Exception):
+        await record_voice_cost(
+            user_id,
+            duration_secs,
+            model,
+            session_id=session_id,
+        )
 
 
 async def _build_system_instruction(

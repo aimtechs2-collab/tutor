@@ -80,23 +80,29 @@ def log_admin_action(
     _write(payload)
 
 
-def get_audit_log(limit: int = 100) -> list[dict]:
+def get_audit_log(
+    limit: int = 100,
+    action_filter: str | None = None,
+) -> list[dict]:
     """Read the most recent audit log entries, newest first."""
-    import json
+    import json as _json
     try:
         p = _audit_file()
         if not p.exists():
             return []
         lines = p.read_text(encoding="utf-8").strip().split("\n")
-        events = []
+        events: list[dict] = []
         for line in reversed(lines):
             line = line.strip()
             if not line:
                 continue
             try:
-                events.append(json.loads(line))
+                entry = _json.loads(line)
             except Exception:
                 continue
+            if action_filter and entry.get("action") != action_filter:
+                continue
+            events.append(entry)
             if len(events) >= limit:
                 break
         return events

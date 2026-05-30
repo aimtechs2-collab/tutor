@@ -22,6 +22,7 @@ import {
   X,
 } from "lucide-react";
 import Link from "next/link";
+import { adminRoleBadgeClass, adminRoleLabel } from "@/lib/admin-roles";
 
 function formatDate(iso: string): string {
   if (!iso) return "—";
@@ -34,6 +35,30 @@ function formatDate(iso: string): string {
   } catch {
     return "—";
   }
+}
+
+function statusBadge(user: UserRecord) {
+  if (user.banned) {
+    return (
+      <span className="inline-flex items-center rounded-full border border-[var(--destructive)]/30 bg-[color-mix(in_srgb,var(--destructive)_12%,var(--card))] px-2.5 py-0.5 text-xs font-medium text-[var(--destructive)]">
+        Banned
+      </span>
+    );
+  }
+  if (user.disabled) {
+    return (
+      <span className="inline-flex items-center rounded-full border border-[color-mix(in_srgb,var(--primary)_35%,var(--border))] bg-[color-mix(in_srgb,var(--primary)_12%,var(--card))] px-2.5 py-0.5 text-xs font-medium text-[var(--primary)]">
+        Suspended
+      </span>
+    );
+  }
+  return (
+    <span
+      className="inline-block h-2.5 w-2.5 rounded-full bg-[color-mix(in_srgb,var(--primary)_55%,var(--foreground))]"
+      title="Active"
+      aria-label="Active"
+    />
+  );
 }
 
 export default function AdminUsersPage() {
@@ -224,6 +249,7 @@ export default function AdminUsersPage() {
               <thead>
                 <tr className="border-b border-[var(--border)] text-left text-xs text-[var(--muted-foreground)] uppercase tracking-wider">
                   <th className="px-5 py-3 font-medium">Username</th>
+                  <th className="px-5 py-3 font-medium">Status</th>
                   <th className="px-5 py-3 font-medium">Role</th>
                   <th className="px-5 py-3 font-medium">Joined</th>
                   <th className="px-5 py-3 font-medium text-right">Actions</th>
@@ -238,27 +264,42 @@ export default function AdminUsersPage() {
                     <Fragment key={user.username}>
                       <tr className="group hover:bg-[var(--background)]/50 transition-colors">
                         <td className="px-5 py-3.5 font-medium text-[var(--foreground)]">
-                          {user.username}
+                          <Link
+                            href={`/admin/users/${encodeURIComponent(user.id)}`}
+                            className="hover:text-[var(--primary)]"
+                          >
+                            {user.username}
+                          </Link>
                           {isSelf && (
                             <span className="ml-2 text-xs text-[var(--muted-foreground)]">
                               (you)
                             </span>
                           )}
                         </td>
+                        <td className="px-5 py-3.5">{statusBadge(user)}</td>
                         <td className="px-5 py-3.5">
-                          <span
-                            className={`inline-flex items-center gap-1 rounded-full px-2.5 py-0.5 text-xs font-medium
+                          <div className="flex flex-wrap items-center gap-1.5">
+                            <span
+                              className={`inline-flex items-center gap-1 rounded-full px-2.5 py-0.5 text-xs font-medium
                             ${
                               user.role === "admin"
                                 ? "bg-purple-500/15 text-purple-600 dark:text-purple-400"
                                 : "bg-[var(--muted)]/50 text-[var(--muted-foreground)]"
                             }`}
-                          >
-                            {user.role === "admin" ? (
-                              <Shield size={11} />
+                            >
+                              {user.role === "admin" ? (
+                                <Shield size={11} />
+                              ) : null}
+                              {user.role}
+                            </span>
+                            {user.admin_role ? (
+                              <span
+                                className={`inline-flex items-center rounded-full border px-2 py-0.5 text-[10px] font-medium ${adminRoleBadgeClass(user.admin_role)}`}
+                              >
+                                {adminRoleLabel(user.admin_role)}
+                              </span>
                             ) : null}
-                            {user.role}
-                          </span>
+                          </div>
                         </td>
                         <td className="px-5 py-3.5 text-[var(--muted-foreground)]">
                           {formatDate(user.created_at)}
@@ -327,7 +368,7 @@ export default function AdminUsersPage() {
                       </tr>
                       {canManageAssignments && expandedUserId === user.id && (
                         <tr>
-                          <td colSpan={4} className="p-0">
+                          <td colSpan={5} className="p-0">
                             <GrantEditor key={user.id} userId={user.id} />
                           </td>
                         </tr>

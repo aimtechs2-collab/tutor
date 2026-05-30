@@ -1,0 +1,11 @@
+ALTER TABLE "auth_users"
+    ADD COLUMN IF NOT EXISTS "suspended_at" TIMESTAMPTZ;
+
+ALTER TABLE "auth_users"
+    ADD COLUMN IF NOT EXISTS "suspension_reason" TEXT NOT NULL DEFAULT '';
+
+ALTER TABLE "auth_users"
+    ADD COLUMN IF NOT EXISTS "banned" BOOLEAN NOT NULL DEFAULT FALSE;
+
+ALTER TABLE "auth_users"
+    ADD COLUMN IF NOT EXISTS "ban_reason" TEXT NOT NULL DEFAULT '';

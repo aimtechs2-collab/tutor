@@ -6,6 +6,7 @@ import { usePathname } from "next/navigation";
 import { useEffect, useState } from "react";
 import { AdminLink } from "@/components/auth/AdminLink";
 import { LogoutButton } from "@/components/auth/LogoutButton";
+import { NotificationBell } from "@/components/NotificationBell";
 
 const CLERK_ENABLED =
   process.env.NEXT_PUBLIC_AUTH_PROVIDER === "clerk" &&
@@ -52,6 +53,7 @@ function ClerkUserNav({ collapsed = false }: UserNavProps) {
   if (collapsed) {
     return (
       <>
+        <NotificationBell />
         {isAdmin && (
           <Link
             href="/admin/users"
@@ -80,6 +82,9 @@ function ClerkUserNav({ collapsed = false }: UserNavProps) {
 
   return (
     <div className="space-y-1">
+      <div className="flex items-center justify-end px-1">
+        <NotificationBell />
+      </div>
       {isAdmin && (
         <Link
           href="/admin/users"
@@ -121,6 +126,7 @@ export function UserNav({ collapsed = false }: UserNavProps) {
   if (CLERK_ENABLED) return <ClerkUserNav collapsed={collapsed} />;
   return (
     <>
+      <NotificationBell />
       <AdminLink collapsed={collapsed} />
       <LogoutButton collapsed={collapsed} />
     </>

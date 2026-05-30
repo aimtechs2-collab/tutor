@@ -54,6 +54,7 @@ dependencies = [
     "svix>=1.20.0",
     "pocketbase>=0.12.0",
     "psycopg2-binary>=2.9.9",
+    "razorpay>=1.4.0",
     "loguru>=0.7.3,<1.0.0",
     "json-repair>=0.57.0,<1.0.0",
 ]

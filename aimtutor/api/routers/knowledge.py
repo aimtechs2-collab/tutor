@@ -60,6 +60,19 @@ logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
+
+async def _enforce_kb_upload_quota(file_count: int) -> None:
+    if file_count <= 0:
+        return
+    from aimtutor.multi_user.context import get_current_user
+    from aimtutor.services.quota_guard import enforce_and_record
+
+    user = get_current_user()
+    if user.is_admin:
+        return
+    await enforce_and_record(user.id, "kb_uploads", float(file_count))
+
+
 # Constants for byte conversions
 BYTES_PER_GB = 1024**3
 BYTES_PER_MB = 1024**2
@@ -1060,6 +1073,7 @@ async def upload_files(
             )
         allowed_extensions = FileTypeRouter.get_supported_extensions()
         _validate_upload_batch(files, allowed_extensions=allowed_extensions)
+        await _enforce_kb_upload_quota(len(files))
         uploaded_files, uploaded_file_paths = _save_uploaded_files(
             files, raw_dir, allowed_extensions=allowed_extensions
         )
@@ -1114,6 +1128,7 @@ async def create_knowledge_base(
         rag_provider = _validate_registered_provider(rag_provider)
         allowed_extensions = FileTypeRouter.get_supported_extensions()
         _validate_upload_batch(files, allowed_extensions=allowed_extensions)
+        await _enforce_kb_upload_quota(len(files))
 
         logger.info(f"Creating KB: {name}")
         task_id = _build_unique_task_id("kb_init", name)
