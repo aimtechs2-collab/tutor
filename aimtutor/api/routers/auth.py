@@ -254,12 +254,14 @@ def _raise_if_account_blocked(user_id: str | None) -> None:
 async def require_auth(
     authorization: str | None = Header(default=None, alias="Authorization"),
     dt_token: str | None = Cookie(default=None),
+    token: str | None = None,
 ) -> TokenPayload | None:
     """
     FastAPI dependency that enforces authentication when AUTH_ENABLED=true.
 
     Accepts the JWT from either:
       - Authorization: Bearer <token> header
+      - ``token`` query param (EventSource cannot send headers)
       - dt_token cookie
 
     Works on both HTTP and WebSocket routes — ``Header`` and ``Cookie`` are
@@ -269,7 +271,7 @@ async def require_auth(
     Raises HTTP 401 if auth is enabled but the token is missing or invalid.
     """
     if clerk_is_enabled():
-        token = _bearer_token_from_header(authorization)
+        token = _bearer_token_from_header(authorization) or (token or "").strip() or None
         if not token:
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED,

@@ -1,11 +1,8 @@
+import { InlineScript } from "@/components/InlineScript";
+
 /**
- * ThemeScript - Initializes theme from localStorage before React hydration
- * This prevents the flash of wrong theme on page load.
- *
- * Must be a Server Component: in Next.js / React 19, <script> tags rendered
- * by Client Components are inert on the client. Rendering it from the server
- * inlines the snippet into the SSR HTML so the browser executes it before
- * hydration.
+ * ThemeScript - Initializes theme from localStorage before React hydration.
+ * Uses InlineScript so React 19 does not warn about inert client-rendered scripts.
  */
 export default function ThemeScript() {
   const themeScript = `
@@ -37,10 +34,5 @@ export default function ThemeScript() {
     })();
   `;
 
-  return (
-    <script
-      dangerouslySetInnerHTML={{ __html: themeScript }}
-      suppressHydrationWarning
-    />
-  );
+  return <InlineScript html={themeScript} />;
 }

@@ -18,6 +18,7 @@ import {
   resolveSourceUrl,
   type FilePreviewSource,
 } from "@/components/chat/preview/previewerFor";
+import { useAuthenticatedBlobUrl } from "@/components/chat/preview/previewers/useAuthenticatedBlobUrl";
 
 // Reuse the chat renderers — they're pure presentation given (url, filename)
 // and don't carry chat-specific state.
@@ -82,10 +83,18 @@ export default function KbFilePreview({
     () => (source ? resolveSourceUrl(source, apiUrl) : null),
     [source],
   );
+  const blobState = useAuthenticatedBlobUrl(previewUrl);
   const kind = useMemo(
     () => (source ? previewKindFor(source) : null),
     [source],
   );
+  const usesDirectFetch =
+    kind === "markdown" || kind === "code" || kind === "text" || kind === "office-text";
+  const renderUrl = usesDirectFetch
+    ? previewUrl
+    : blobState.kind === "ready"
+      ? blobState.blobUrl
+      : null;
 
   if (!source) {
     return (
@@ -226,6 +235,19 @@ export default function KbFilePreview({
             url={null}
             reason="legacy"
           />
+        ) : blobState.kind === "loading" && !usesDirectFetch ? (
+          <div className="flex h-full items-center justify-center text-[12px] text-[var(--muted-foreground)]">
+            {t("Loading preview…")}
+          </div>
+        ) : blobState.kind === "error" && !usesDirectFetch ? (
+          <div className="flex h-full flex-col items-center justify-center gap-2 px-6 text-center">
+            <p className="text-[13px] font-medium text-[var(--foreground)]">
+              {source.filename}
+            </p>
+            <p className="max-w-sm text-[12px] text-red-500">{blobState.message}</p>
+          </div>
+        ) : !renderUrl && !usesDirectFetch ? (
+          <FallbackPreview filename={source.filename} url={null} reason="legacy" />
         ) : kind === "office-text" ? (
           <OfficeTextPreview
             filename={source.filename}
@@ -233,21 +255,21 @@ export default function KbFilePreview({
             url={previewUrl}
           />
         ) : kind === "pdf" ? (
-          <PdfPreview url={previewUrl} filename={source.filename} />
+          <PdfPreview url={renderUrl!} filename={source.filename} />
         ) : kind === "image" ? (
-          <ImagePreview url={previewUrl} filename={source.filename} />
+          <ImagePreview url={renderUrl!} filename={source.filename} />
         ) : kind === "svg" ? (
-          <SvgPreview url={previewUrl} filename={source.filename} />
+          <SvgPreview url={renderUrl!} filename={source.filename} />
         ) : kind === "markdown" ? (
           <div className="h-full overflow-y-auto">
-            <MarkdownPreview url={previewUrl} />
+            <MarkdownPreview url={previewUrl!} />
           </div>
         ) : kind === "code" || kind === "text" ? (
           <div className="h-full overflow-y-auto">
-            <TextPreview url={previewUrl} filename={source.filename} />
+            <TextPreview url={previewUrl!} filename={source.filename} />
           </div>
         ) : (
-          <FallbackPreview filename={source.filename} url={previewUrl} />
+          <FallbackPreview filename={source.filename} url={renderUrl} />
         )}
       </div>
     </div>

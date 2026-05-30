@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
-import { apiUrl, wsUrl } from "@/lib/api";
+import { sseUrlWithAuth, wsUrlWithAuth } from "@/lib/api";
 import type { ProgressInfo } from "@/lib/knowledge-helpers";
 
 export type TaskKind = "create" | "upload" | "reindex";
@@ -83,14 +83,13 @@ export function useKnowledgeProgress(options?: UseKnowledgeProgressOptions) {
       const query = expectedTaskId
         ? `?task_id=${encodeURIComponent(expectedTaskId)}`
         : "";
-      const socket = new WebSocket(
-        wsUrl(
-          `/api/v1/knowledge/${encodeURIComponent(kbName)}/progress/ws${query}`,
-        ),
-      );
-      socketsRef.current[kbName] = socket;
+      const path = `/api/v1/knowledge/${encodeURIComponent(kbName)}/progress/ws${query}`;
 
-      socket.onmessage = (event) => {
+      void (async () => {
+        const socket = new WebSocket(await wsUrlWithAuth(path));
+        socketsRef.current[kbName] = socket;
+
+        socket.onmessage = (event) => {
         try {
           const raw = JSON.parse(event.data) as {
             type?: string;
@@ -117,10 +116,11 @@ export function useKnowledgeProgress(options?: UseKnowledgeProgressOptions) {
         }
       };
 
-      socket.onerror = () => closeSocket(kbName);
-      socket.onclose = () => {
-        delete socketsRef.current[kbName];
-      };
+        socket.onerror = () => closeSocket(kbName);
+        socket.onclose = () => {
+          delete socketsRef.current[kbName];
+        };
+      })();
     },
     [closeSocket, setProgress],
   );
@@ -141,15 +141,18 @@ export function useKnowledgeProgress(options?: UseKnowledgeProgressOptions) {
         },
       }));
 
-      const source = new EventSource(
-        apiUrl(`/api/v1/knowledge/tasks/${encodeURIComponent(taskId)}/stream`),
-        { withCredentials: true },
-      );
-      sourcesRef.current[kbName] = source;
-
       let settled = false;
 
-      source.addEventListener("process_log", (event) => {
+      void (async () => {
+        const source = new EventSource(
+          await sseUrlWithAuth(
+            `/api/v1/knowledge/tasks/${encodeURIComponent(taskId)}/stream`,
+          ),
+          { withCredentials: true },
+        );
+        sourcesRef.current[kbName] = source;
+
+        source.addEventListener("process_log", (event) => {
         try {
           const payload = JSON.parse((event as MessageEvent).data) as {
             message?: string;
@@ -247,23 +250,24 @@ export function useKnowledgeProgress(options?: UseKnowledgeProgressOptions) {
         onCompleteRef.current?.(kbName);
       });
 
-      source.onerror = () => {
-        if (settled) return;
-        setTasksByKb((prev) => {
-          const current = prev[kbName];
-          if (!current || current.taskId !== taskId) return prev;
-          if (!current.executing) return prev;
-          return {
-            ...prev,
-            [kbName]: {
-              ...current,
-              executing: false,
-              error: current.error || "Process log stream disconnected.",
-            },
-          };
-        });
-        closeSource(kbName);
-      };
+        source.onerror = () => {
+          if (settled) return;
+          setTasksByKb((prev) => {
+            const current = prev[kbName];
+            if (!current || current.taskId !== taskId) return prev;
+            if (!current.executing) return prev;
+            return {
+              ...prev,
+              [kbName]: {
+                ...current,
+                executing: false,
+                error: current.error || "Process log stream disconnected.",
+              },
+            };
+          });
+          closeSource(kbName);
+        };
+      })();
     },
     [closeSource, setProgress],
   );

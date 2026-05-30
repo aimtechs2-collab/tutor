@@ -15,7 +15,7 @@ import { useTranslation } from "react-i18next";
 
 import { writeStoredLanguage } from "@/context/app-shell-storage";
 import type { ModelAccess } from "@/features/multi-user/types";
-import { apiFetch, apiUrl } from "@/lib/api";
+import { apiFetch, apiUrl, sseUrlWithAuth } from "@/lib/api";
 import { setTheme as applyThemePreference } from "@/lib/theme";
 
 // ─── Domain types ─────────────────────────────────────────────────────────
@@ -536,7 +536,7 @@ export function SettingsProvider({ children }: { children: ReactNode }) {
       const match = (providers.embedding || []).find(
         (p) => p.value === (binding || "openai"),
       );
-      return match?.default_dim || "3072";
+      return match?.default_dim || "1536";
     },
     [providers.embedding],
   );
@@ -889,7 +889,9 @@ export function SettingsProvider({ children }: { children: ReactNode }) {
           throw new Error(payload.detail || t("Could not start diagnostics."));
         }
         const source = new EventSource(
-          apiUrl(`/api/v1/settings/tests/${service}/${payload.run_id}/events`),
+          await sseUrlWithAuth(
+            `/api/v1/settings/tests/${service}/${payload.run_id}/events`,
+          ),
           { withCredentials: true },
         );
         eventSourceRef.current = source;

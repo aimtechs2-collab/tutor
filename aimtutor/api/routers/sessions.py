@@ -67,6 +67,15 @@ class QuizResultsRequest(BaseModel):
     turn_id: str = ""
 
 
+class LiveTranscriptTurn(BaseModel):
+    role: str = Field(..., min_length=1)
+    text: str = Field(..., min_length=1)
+
+
+class LiveTranscriptRequest(BaseModel):
+    turns: list[LiveTranscriptTurn] = Field(default_factory=list)
+
+
 def _format_quiz_results_message(answers: list[QuizResultItem]) -> str:
     total = len(answers)
     correct = sum(1 for item in answers if item.is_correct)
@@ -182,37 +191,16 @@ async def delete_turn_by_message(session_id: str, message_id: int):
     return result
 
 
+@router.post("/{session_id}/live-transcript")
+async def append_live_transcript(session_id: str, payload: LiveTranscriptRequest):
+    """Persist Gemini Live voice turns as normal chat messages."""
+    from aimtutor.services.session.live_transcript import persist_live_transcript_turns
 
-@router.post("/{session_id}/voice-transcript")
-async def append_voice_transcript(
-    session_id: str,
-    payload: dict,
-):
-    """Append a completed voice session transcript to chat history."""
-    turns = payload.get("turns", [])
-    duration = payload.get("duration_seconds", 0)
-    if not turns:
-        return {"status": "ok", "appended": 0}
-
-    store = get_sqlite_session_store()
-    session = await store.get_session(session_id)
-    if session is None:
-        raise HTTPException(status_code=404, detail="Session not found")
-
-    # Build a single readable summary message
-    lines = [f"🎙 **Voice Session** ({int(duration // 60)}m {int(duration % 60)}s)\n"]
-    for t in turns:
-        role = "**You:**" if t.get("role") == "user" else "**Tutor:**"
-        lines.append(f"{role} {t.get('text', '').strip()}")
-
-    content = "\n\n".join(lines)
-    await store.add_message(
-        session_id=session_id,
-        role="assistant",
-        content=content,
-        capability="chat",
+    return await persist_live_transcript_turns(
+        session_id,
+        [{"role": t.role, "text": t.text} for t in payload.turns],
     )
-    return {"status": "ok", "appended": len(turns)}
+
 
 @router.post("/{session_id}/quiz-results")
 async def record_quiz_results(session_id: str, payload: QuizResultsRequest):

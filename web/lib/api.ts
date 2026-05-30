@@ -166,18 +166,52 @@ export function wsUrl(path: string): string {
   // Remove trailing slash from base URL if present
   const normalizedBase = base.endsWith("/") ? base.slice(0, -1) : base;
 
+  const full = `${normalizedBase}${normalizedPath}`;
+
+  // Gemini Live passes a one-time server-minted `token` query param. Do not
+  // replace it with the Clerk JWT (appendClerkToken would overwrite `token`).
+  if (normalizedPath.includes("/gemini-live/session")) {
+    return full;
+  }
+
   return appendClerkToken(
-    `${normalizedBase}${normalizedPath}`,
+    full,
     typeof window === "undefined" ? undefined : window.__aimtutorClerkToken,
   );
 }
 
+async function resolveClerkWsToken(maxWaitMs = 8000): Promise<string | undefined> {
+  if (!CLERK_ENABLED || typeof window === "undefined") return undefined;
+
+  const readToken = async () =>
+    (await window.__aimtutorGetClerkToken?.()) || window.__aimtutorClerkToken;
+
+  let token = await readToken();
+  if (token || !window.__aimtutorGetClerkToken) return token || undefined;
+
+  const deadline = Date.now() + maxWaitMs;
+  while (Date.now() < deadline) {
+    await new Promise((resolve) => setTimeout(resolve, 200));
+    token = await readToken();
+    if (token) return token;
+  }
+  return undefined;
+}
+
 export async function wsUrlWithAuth(path: string): Promise<string> {
   const url = wsUrl(path);
+  if (url.includes("/gemini-live/session")) return url;
   if (!CLERK_ENABLED || typeof window === "undefined") return url;
-  const token =
-    (await window.__aimtutorGetClerkToken?.()) || window.__aimtutorClerkToken;
-  return appendClerkToken(url, token || undefined);
+  const token = await resolveClerkWsToken();
+  return appendClerkToken(url, token);
+}
+
+/** EventSource cannot send Authorization headers — append Clerk token as query param. */
+export async function sseUrlWithAuth(path: string): Promise<string> {
+  const url = apiUrl(path);
+  if (!CLERK_ENABLED || typeof window === "undefined") return url;
+  const token = await resolveClerkWsToken();
+  return appendClerkToken(url, token);
 }
 
 /**

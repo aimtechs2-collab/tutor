@@ -30,8 +30,19 @@ import { useTranslation } from "react-i18next";
 import type { SelectedRecord } from "@/lib/notebook-selection-types";
 import type { SelectedHistorySession } from "@/components/chat/HistorySessionPicker";
 import type { SelectedQuestionEntry } from "@/components/chat/QuestionBankPicker";
-import ChatComposer from "@/components/chat/home/ChatComposer";
+import LiveRoutedChatComposer from "@/components/gemini-live/LiveRoutedChatComposer";
 import { ChatMessageList } from "@/components/chat/home/ChatMessages";
+
+import { LiveVoiceProvider } from "@/context/LiveVoiceContext";
+
+const LiveTranscriptArea = dynamic(
+  () => import("@/components/gemini-live/LiveTranscriptArea"),
+  { ssr: false },
+);
+const LiveVoiceDock = dynamic(
+  () => import("@/components/gemini-live/LiveVoiceDock"),
+  { ssr: false },
+);
 // Imported eagerly so the drawer shell is always mounted off-screen —
 // clicking a chip becomes a single CSS class flip, no chunk fetch + double
 // render. The heavy renderers inside still load lazily.
@@ -102,7 +113,11 @@ import {
 } from "@/lib/research-types";
 import { listKnowledgeBases } from "@/lib/knowledge-api";
 import { listLLMOptions, type LLMOption } from "@/lib/llm-options";
-import { updateSessionLLMSelection } from "@/lib/session-api";
+import {
+  persistLiveTranscript,
+  updateSessionLLMSelection,
+} from "@/lib/session-api";
+import type { TranscriptTurn } from "@/hooks/useGeminiLive";
 import {
   getEnabledOptionalTools,
   invalidateEnabledOptionalToolsCache,
@@ -305,6 +320,7 @@ export default function ChatPage() {
     switchBranch,
     newSession,
     loadSession,
+    appendLiveTranscriptLocally,
     renameSessionTitle,
   } = useUnifiedChat();
 
@@ -324,6 +340,7 @@ export default function ChatPage() {
     null,
   );
   const [attachments, setAttachments] = useState<PendingAttachment[]>([]);
+  const [liveVoiceOpen, setLiveVoiceOpen] = useState(false);
   const [dragging, setDragging] = useState(false);
   const [attachmentError, setAttachmentError] = useState<string | null>(null);
   const [previewSource, setPreviewSource] = useState<FilePreviewSource | null>(
@@ -1734,9 +1751,63 @@ export default function ChatPage() {
     downloadChatMarkdown(state.messages, { title });
   }, [state.messages]);
 
+  const handlePersistLiveTranscript = useCallback(
+    async (turns: TranscriptTurn[]) => {
+      if (!turns.length) return;
+      let sid = state.sessionId || sessionIdParam;
+      if (!sid) {
+        sid =
+          typeof crypto !== "undefined" && "randomUUID" in crypto
+            ? crypto.randomUUID()
+            : `live-${Date.now()}`;
+      }
+      try {
+        await persistLiveTranscript(sid, turns);
+        await loadSession(sid);
+      } catch (err) {
+        console.warn("Live transcript API save failed; showing locally", err);
+        appendLiveTranscriptLocally(sid, turns);
+      }
+    },
+    [
+      state.sessionId,
+      sessionIdParam,
+      loadSession,
+      appendLiveTranscriptLocally,
+    ],
+  );
+
   const showSessionLoading =
     Boolean(sessionIdParam) &&
     (sessionRouteLoading || state.sessionId !== sessionIdParam);
+
+  const hasComposerExtras = useMemo(
+    () =>
+      attachments.length > 0 ||
+      selectedBookReferences.length > 0 ||
+      selectedNotebookRecords.length > 0 ||
+      selectedHistorySessions.length > 0 ||
+      selectedQuestionEntries.length > 0 ||
+      selectedSkills.length > 0 ||
+      skillsAutoMode ||
+      selectedMemoryFiles.length > 0,
+    [
+      attachments.length,
+      selectedBookReferences.length,
+      selectedNotebookRecords.length,
+      selectedHistorySessions.length,
+      selectedQuestionEntries.length,
+      selectedSkills.length,
+      skillsAutoMode,
+      selectedMemoryFiles.length,
+    ],
+  );
+
+  const routeTextToLive = useMemo(
+    () =>
+      liveVoiceOpen && !isQuizMode && !isVisualizeMode && !isResearchMode,
+    [liveVoiceOpen, isQuizMode, isVisualizeMode, isResearchMode],
+  );
 
   return (
     <QuizFollowupProvider>
@@ -1842,6 +1913,13 @@ export default function ChatPage() {
               />
             </div>
           </div>
+          <LiveVoiceProvider
+            active={liveVoiceOpen}
+            sessionId={state.sessionId ?? undefined}
+            kbName={state.knowledgeBases[0] || undefined}
+            onPersistTranscript={handlePersistLiveTranscript}
+            onEnd={() => setLiveVoiceOpen(false)}
+          >
           <div className="mx-auto flex w-full max-w-[960px] flex-1 min-h-0 flex-col overflow-hidden px-6">
             {showSessionLoading ? (
               <div className="flex flex-1 min-h-0 flex-col justify-end pb-14">
@@ -1854,11 +1932,11 @@ export default function ChatPage() {
                   </div>
                 </div>
               </div>
-            ) : !hasMessages ? (
+            ) : !hasMessages && !liveVoiceOpen ? (
               <div className="flex flex-1 min-h-0 flex-col items-center justify-end pb-14 animate-fade-in">
-                <div className="flex flex-col items-center justify-center gap-3 sm:flex-row">
-                  <TextLogo className="text-[34px] sm:text-[40px]" />
-                  <h1 className="font-serif text-[44px] font-medium leading-[1.1] tracking-[-0.015em] text-[var(--foreground)]">
+                <div className="flex max-w-[min(100%,40rem)] flex-col items-center gap-4 px-4 text-center">
+                  <TextLogo className="text-[26px] sm:text-[30px]" />
+                  <h1 className="text-balance font-serif text-[28px] font-medium leading-[1.25] tracking-[-0.02em] text-[var(--foreground)] sm:text-[34px] md:text-[38px]">
                     {t(welcomeGreeting)}
                   </h1>
                 </div>
@@ -1869,17 +1947,12 @@ export default function ChatPage() {
                 data-chat-scroll-root="true"
                 onScroll={handleMessagesScroll}
                 onClick={handleMessagesClick}
-                className={`mx-auto w-full flex-1 min-h-0 space-y-7 overflow-y-auto pr-4 [scrollbar-gutter:stable] ${hasMessages ? "pt-6" : "pt-2 pb-6"}`}
+                className={`mx-auto w-full flex-1 min-h-0 overflow-y-auto pr-4 [scrollbar-gutter:stable] ${
+                  hasMessages || liveVoiceOpen ? "space-y-7 pt-6" : "pt-2 pb-6"
+                }`}
                 style={
-                  hasMessages
+                  hasMessages || liveVoiceOpen
                     ? (() => {
-                        // The bottom 40 px of the messages area fades to
-                        // transparent so content "dissolves" into the composer
-                        // gutter. Without enough bottom padding, the fade
-                        // overlaps the last assistant paragraph and looks like
-                        // a stuck scroll — the user reaches scrollHeight but
-                        // can still see only a faded sliver of text. paddingBottom
-                        // is sized so the fade falls over empty space.
                         const maskImage =
                           "linear-gradient(to bottom, transparent 0px, #000 32px, #000 calc(100% - 40px), transparent 100%)";
                         return {
@@ -1891,27 +1964,39 @@ export default function ChatPage() {
                     : undefined
                 }
               >
-                <ChatMessageList
-                  messages={state.messages}
-                  isStreaming={state.isStreaming}
-                  sessionId={state.sessionId}
-                  language={state.language}
-                  onAnswerNow={handleAnswerNow}
-                  onCopyAssistantMessage={copyAssistantMessage}
-                  onRegenerateMessage={handleRegenerateMessage}
-                  onConfirmOutline={handleConfirmOutline}
-                  onPreviewAttachment={handlePreviewMessageAttachment}
-                  onDeleteTurn={deleteTurn}
-                  selectedBranches={state.selectedBranches}
-                  onEditMessage={editMessage}
-                  onSwitchBranch={switchBranch}
-                  onSubmitUserReply={submitUserReply}
-                />
+                {hasMessages ? (
+                  <ChatMessageList
+                    messages={state.messages}
+                    isStreaming={state.isStreaming}
+                    sessionId={state.sessionId}
+                    language={state.language}
+                    onAnswerNow={handleAnswerNow}
+                    onCopyAssistantMessage={copyAssistantMessage}
+                    onRegenerateMessage={handleRegenerateMessage}
+                    onConfirmOutline={handleConfirmOutline}
+                    onPreviewAttachment={handlePreviewMessageAttachment}
+                    onDeleteTurn={deleteTurn}
+                    selectedBranches={state.selectedBranches}
+                    onEditMessage={editMessage}
+                    onSwitchBranch={switchBranch}
+                    onSubmitUserReply={submitUserReply}
+                  />
+                ) : null}
+                {liveVoiceOpen ? (
+                  <LiveTranscriptArea embedded={hasMessages} />
+                ) : null}
                 <div ref={messagesEndRef} className="h-px w-full shrink-0" />
               </div>
             )}
 
-            <ChatComposer
+            {liveVoiceOpen ? <LiveVoiceDock /> : null}
+
+            <LiveRoutedChatComposer
+              routeTextToLive={routeTextToLive}
+              hasComposerExtras={hasComposerExtras}
+              onLiveTextSent={() => {
+                shouldAutoScrollRef.current = true;
+              }}
               composerRef={composerRef}
               capMenuRef={capMenuRef}
               capBtnRef={capBtnRef}
@@ -1980,16 +2065,20 @@ export default function ChatPage() {
               onSelectCapability={handleSelectCapability}
               onCancelStreaming={cancelStreamingTurn}
               prefillInputRef={prefillInputRef}
+              liveVoiceOpen={liveVoiceOpen}
+              onLiveVoiceOpenChange={setLiveVoiceOpen}
             />
             <div
               aria-hidden="true"
               className="shrink-0"
               style={{
-                flexGrow: hasMessages ? 0 : 1.4,
+                flexGrow:
+                  liveVoiceOpen || hasMessages ? 0 : 1.4,
                 transition: "flex-grow 650ms cubic-bezier(0.16, 1, 0.3, 1)",
               }}
             />
           </div>
+          </LiveVoiceProvider>
           <NotebookRecordPicker
             open={showNotebookPicker}
             onClose={handleCloseNotebookPicker}

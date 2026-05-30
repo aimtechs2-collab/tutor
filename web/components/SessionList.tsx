@@ -29,23 +29,6 @@ interface SessionListProps {
   onDelete: (sessionId: string) => void | Promise<void>;
 }
 
-function statusColor(status?: SessionRuntimeStatus): string {
-  switch (status) {
-    case "running":
-      return "bg-blue-500";
-    case "completed":
-      return "bg-emerald-400";
-    case "failed":
-      return "bg-rose-500";
-    case "rejected":
-      return "bg-fuchsia-500";
-    case "cancelled":
-      return "bg-amber-500";
-    default:
-      return "bg-[var(--muted-foreground)]/25";
-  }
-}
-
 function StatusIndicator({ status }: { status?: SessionRuntimeStatus }) {
   if (!status || status === "idle") return null;
 
@@ -163,11 +146,11 @@ export default function SessionList({
   if (loading) {
     if (compact) {
       return (
-        <div className="ml-5 space-y-1.5 border-l border-[var(--border)]/30 py-1 pl-3">
-          {[1, 2, 3].map((i) => (
+        <div className="space-y-0.5 py-0.5">
+          {[1, 2, 3, 4, 5].map((i) => (
             <div
               key={i}
-              className="h-4 w-3/4 animate-pulse rounded bg-[var(--muted)]/40"
+              className="h-9 animate-pulse rounded-lg bg-[var(--sidebar-recent-hover)]"
             />
           ))}
         </div>
@@ -194,116 +177,99 @@ export default function SessionList({
     );
   }
 
-  /* ---- Compact tree-line style (under Chat nav item) ---- */
+  /* ---- Sidebar recents (ChatGPT-style flat list) ---- */
   if (compact) {
     return (
-      <div className="ml-5 border-l border-[var(--border)]/30 py-1">
-        {grouped.map(([key, items], groupIdx) => (
-          <div key={key}>
-            {groupIdx > 0 && (
-              <div className="my-1 ml-3 mr-2 border-t border-[var(--border)]/20" />
-            )}
-            <div className="px-3 py-0.5 text-[10px] font-medium uppercase tracking-wider text-[var(--muted-foreground)]/40">
-              {groupLabels[key]}
-            </div>
-            {items.map((session) => {
-              const active = activeSessionId === session.session_id;
-              const isEditing = editingId === session.session_id;
-              return (
-                <div
-                  key={session.session_id}
-                  onClick={() => void onSelect(session.session_id)}
+      <nav aria-label={t("Recents")} className="space-y-0.5 py-0.5">
+        {sessions.map((session) => {
+          const active = activeSessionId === session.session_id;
+          const isEditing = editingId === session.session_id;
+          return (
+            <div
+              key={session.session_id}
+              onClick={() => void onSelect(session.session_id)}
+              onKeyDown={(event) => {
+                if (event.key === "Enter" || event.key === " ") {
+                  event.preventDefault();
+                  void onSelect(session.session_id);
+                }
+              }}
+              role="button"
+              tabIndex={0}
+              className={`group relative flex w-full items-center rounded-lg px-3 py-2 text-left text-[14px] leading-snug transition-colors duration-100 ${
+                active
+                  ? "bg-[var(--sidebar-recent-active)] text-[var(--foreground)]"
+                  : "text-[var(--foreground)] hover:bg-[var(--sidebar-recent-hover)]"
+              }`}
+            >
+              {isEditing ? (
+                <input
+                  value={draftTitle}
+                  autoFocus
+                  onChange={(event) => setDraftTitle(event.target.value)}
+                  onBlur={() => void commitEdit()}
                   onKeyDown={(event) => {
-                    if (event.key === "Enter" || event.key === " ") {
-                      event.preventDefault();
-                      void onSelect(session.session_id);
+                    if (event.key === "Enter") void commitEdit();
+                    if (event.key === "Escape") {
+                      setEditingId(null);
+                      setDraftTitle("");
                     }
                   }}
-                  role="button"
-                  tabIndex={0}
-                  className={`group flex items-center gap-2 rounded-r-lg py-1 pl-3 pr-2 transition-colors ${
-                    active
-                      ? "bg-[var(--background)]/50 text-[var(--foreground)]"
-                      : "text-[var(--muted-foreground)] hover:bg-[var(--background)]/40 hover:text-[var(--foreground)]"
-                  }`}
-                >
-                  <span
-                    className={`block h-1.5 w-1.5 shrink-0 rounded-full ${
-                      active
-                        ? "bg-[var(--foreground)]/60"
-                        : statusColor(session.status)
-                    }`}
-                  />
-                  {isEditing ? (
-                    <input
-                      value={draftTitle}
-                      autoFocus
-                      onChange={(event) => setDraftTitle(event.target.value)}
-                      onBlur={() => void commitEdit()}
-                      onKeyDown={(event) => {
-                        if (event.key === "Enter") void commitEdit();
-                        if (event.key === "Escape") {
-                          setEditingId(null);
-                          setDraftTitle("");
-                        }
-                      }}
-                      onClick={(event) => event.stopPropagation()}
-                      className="min-w-0 flex-1 rounded border border-[var(--border)] bg-[var(--background)] px-1.5 py-px text-[12px] text-[var(--foreground)] outline-none focus:ring-1 focus:ring-[var(--primary)]/40"
-                    />
-                  ) : !hasGeneratedTitle(session) ? (
-                    <span
-                      className={`dt-breathing-text min-w-0 flex-1 truncate text-[13px] italic text-[var(--muted-foreground)] ${active ? "font-medium" : ""}`}
-                    >
-                      {placeholderLabel}
-                    </span>
-                  ) : (
-                    <span
-                      className={`min-w-0 flex-1 truncate text-[13px] ${active ? "font-medium" : ""}`}
-                    >
-                      {getDisplayTitle(session)}
-                    </span>
-                  )}
-                  <div className="flex shrink-0 items-center gap-px opacity-0 transition-opacity group-hover:opacity-100">
-                    {isEditing ? (
-                      <button
-                        onClick={(event) => {
-                          event.stopPropagation();
-                          void commitEdit();
-                        }}
-                        className="rounded p-0.5 text-[var(--muted-foreground)] hover:text-[var(--foreground)]"
-                        aria-label={t("Save title")}
-                      >
-                        <Check size={10} />
-                      </button>
-                    ) : (
-                      <button
-                        onClick={(event) => {
-                          event.stopPropagation();
-                          startEdit(session);
-                        }}
-                        className="rounded p-0.5 text-[var(--muted-foreground)] hover:text-[var(--foreground)]"
-                        aria-label={t("Rename chat")}
-                      >
-                        <Pencil size={10} />
-                      </button>
-                    )}
-                    <button
-                      onClick={(event) => {
-                        event.stopPropagation();
-                        void onDelete(session.session_id);
-                      }}
-                      className="rounded p-0.5 text-[var(--muted-foreground)] hover:text-[var(--destructive)]"
-                      aria-label={t("Delete chat")}
-                    >
-                      <Trash2 size={10} />
-                    </button>
-                  </div>
+                  onClick={(event) => event.stopPropagation()}
+                  className="min-w-0 flex-1 rounded-md border border-[var(--border)] bg-[var(--background)] px-2 py-1 text-[14px] text-[var(--foreground)] outline-none focus:ring-1 focus:ring-[var(--primary)]/40"
+                />
+              ) : !hasGeneratedTitle(session) ? (
+                <span className="dt-breathing-text min-w-0 flex-1 truncate pr-6 italic text-[var(--muted-foreground)]">
+                  {placeholderLabel}
+                </span>
+              ) : (
+                <span className="min-w-0 flex-1 truncate pr-6">
+                  {getDisplayTitle(session)}
+                </span>
+              )}
+              {!isEditing && (
+                <div className="absolute right-1.5 top-1/2 flex -translate-y-1/2 items-center gap-0.5 opacity-0 transition-opacity group-hover:opacity-100">
+                  <button
+                    type="button"
+                    onClick={(event) => {
+                      event.stopPropagation();
+                      startEdit(session);
+                    }}
+                    className="rounded p-1 text-[var(--muted-foreground)] hover:text-[var(--foreground)]"
+                    aria-label={t("Rename chat")}
+                  >
+                    <Pencil size={14} strokeWidth={1.5} />
+                  </button>
+                  <button
+                    type="button"
+                    onClick={(event) => {
+                      event.stopPropagation();
+                      void onDelete(session.session_id);
+                    }}
+                    className="rounded p-1 text-[var(--muted-foreground)] hover:text-[var(--destructive)]"
+                    aria-label={t("Delete chat")}
+                  >
+                    <Trash2 size={14} strokeWidth={1.5} />
+                  </button>
                 </div>
-              );
-            })}
-          </div>
-        ))}
-      </div>
+              )}
+              {isEditing && (
+                <button
+                  type="button"
+                  onClick={(event) => {
+                    event.stopPropagation();
+                    void commitEdit();
+                  }}
+                  className="ml-1 shrink-0 rounded p-1 text-[var(--muted-foreground)] hover:text-[var(--foreground)]"
+                  aria-label={t("Save title")}
+                >
+                  <Check size={14} strokeWidth={1.5} />
+                </button>
+              )}
+            </div>
+          );
+        })}
+      </nav>
     );
   }
 

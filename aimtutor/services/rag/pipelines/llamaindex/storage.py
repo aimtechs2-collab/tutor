@@ -172,11 +172,32 @@ def validate_storage_embeddings(storage_dir: Path) -> None:
     _validate_persisted_embeddings(None, storage_dir)
 
 
+def _index_node_count(index: Any) -> int:
+    """Best-effort count of indexed nodes for clamping retrieval top-k."""
+    try:
+        docstore = index.storage_context.docstore
+        docs = getattr(docstore, "docs", None)
+        if isinstance(docs, dict):
+            return len(docs)
+        hashes = getattr(docstore, "get_all_document_hashes", None)
+        if callable(hashes):
+            return len(hashes())
+    except Exception:
+        pass
+    return 0
+
+
 def retrieve_nodes(storage_dir: Path, query: str, *, top_k: int = 5) -> list[Any]:
     storage_context = StorageContext.from_defaults(persist_dir=str(storage_dir))
     index = load_index_from_storage(storage_context)
     _validate_persisted_embeddings(index, storage_dir)
-    retriever = retrievers.build_retriever(index, storage_dir, top_k=top_k)
+    node_count = _index_node_count(index)
+    retriever = retrievers.build_retriever(
+        index,
+        storage_dir,
+        top_k=top_k,
+        max_nodes=node_count or None,
+    )
     return retriever.retrieve(query)
 
 

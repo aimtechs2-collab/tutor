@@ -168,6 +168,7 @@ export class UnifiedWSClient {
 
   private activeTurnId: string | null = null;
   private lastSeq = 0;
+  private connectPromise: Promise<void> | null = null;
 
   constructor(onEvent: EventHandler, onClose?: () => void) {
     this.onEvent = onEvent;
@@ -181,56 +182,103 @@ export class UnifiedWSClient {
   }
 
   async connect(): Promise<void> {
-    if (this.ws && this.ws.readyState <= WebSocket.OPEN) return;
+    if (this.ws?.readyState === WebSocket.OPEN) return;
+    if (
+      this.ws?.readyState === WebSocket.CONNECTING &&
+      this.connectPromise
+    ) {
+      return this.connectPromise;
+    }
+    if (this.connectPromise) return this.connectPromise;
+
     this.intentionalClose = false;
+    this.connectPromise = new Promise<void>((resolve, reject) => {
+      void (async () => {
+        try {
+          const url = await wsUrlWithAuth("/api/v1/ws");
+          const ws = new WebSocket(url);
+          this.ws = ws;
+          let settled = false;
 
-    const url = await wsUrlWithAuth("/api/v1/ws");
-    this.ws = new WebSocket(url);
+          const finish = (fn: () => void) => {
+            if (settled) return;
+            settled = true;
+            fn();
+          };
 
-    this.ws.onopen = () => {
-      this.reconnectAttempt = 0;
-      this.lastReceivedAt = Date.now();
-      this.startHeartbeat();
+          ws.onopen = () => {
+            finish(resolve);
+            this.reconnectAttempt = 0;
+            this.lastReceivedAt = Date.now();
+            this.startHeartbeat();
 
-      if (this.activeTurnId) {
-        this.send({
-          type: "resume_from",
-          turn_id: this.activeTurnId,
-          seq: this.lastSeq,
-        });
-      }
-    };
+            if (this.activeTurnId) {
+              this.send({
+                type: "resume_from",
+                turn_id: this.activeTurnId,
+                seq: this.lastSeq,
+              });
+            }
+          };
 
-    this.ws.onmessage = (ev) => {
-      this.lastReceivedAt = Date.now();
-      try {
-        const event: StreamEvent = JSON.parse(ev.data);
-        // Heartbeat frames (client-sent ``ping`` echoed by some legacy
-        // backends, or ``pong`` from the modern handler) keep the socket
-        // alive but are not user-visible chat events. They MUST be dropped
-        // here — otherwise the message list renders them as "Unknown type"
-        // error rows, especially during long-running turns.
-        const type = (event as { type?: string }).type;
-        if (type === "ping" || type === "pong") return;
-        if (event.turn_id) this.activeTurnId = event.turn_id;
-        if (event.seq != null) this.lastSeq = Math.max(this.lastSeq, event.seq);
-        this.onEvent(event);
-      } catch {
-        console.warn("Unparseable WS message:", ev.data);
-      }
-    };
+          ws.onmessage = (ev) => {
+            this.lastReceivedAt = Date.now();
+            try {
+              const event: StreamEvent = JSON.parse(ev.data);
+              // Heartbeat frames (client-sent ``ping`` echoed by some legacy
+              // backends, or ``pong`` from the modern handler) keep the socket
+              // alive but are not user-visible chat events. They MUST be dropped
+              // here — otherwise the message list renders them as "Unknown type"
+              // error rows, especially during long-running turns.
+              const type = (event as { type?: string }).type;
+              if (type === "ping" || type === "pong") return;
+              if (event.turn_id) this.activeTurnId = event.turn_id;
+              if (event.seq != null)
+                this.lastSeq = Math.max(this.lastSeq, event.seq);
+              this.onEvent(event);
+            } catch {
+              console.warn("Unparseable WS message:", ev.data);
+            }
+          };
 
-    this.ws.onclose = () => {
-      this.ws = null;
-      this.stopHeartbeat();
-      if (!this.intentionalClose) {
-        this.attemptReconnect();
-      }
-    };
+          ws.onclose = () => {
+            this.ws = null;
+            this.stopHeartbeat();
+            finish(() => reject(new Error("WebSocket closed before open")));
+            if (!this.intentionalClose) {
+              this.attemptReconnect();
+            }
+          };
 
-    this.ws.onerror = (err) => {
-      console.error("WS error:", err);
-    };
+          ws.onerror = (err) => {
+            console.error("WS error:", err);
+            finish(() => reject(new Error("WebSocket connection error")));
+          };
+        } catch (err) {
+          reject(err instanceof Error ? err : new Error(String(err)));
+        }
+      })();
+    }).finally(() => {
+      this.connectPromise = null;
+    });
+
+    return this.connectPromise;
+  }
+
+  /** Wait until the socket is open or the timeout elapses. */
+  async waitUntilConnected(timeoutMs = 12_000): Promise<boolean> {
+    if (this.connected) return true;
+    try {
+      await Promise.race([
+        this.connect(),
+        new Promise<void>((_, reject) =>
+          setTimeout(() => reject(new Error("timeout")), timeoutMs),
+        ),
+      ]);
+    } catch {
+      return this.connected;
+    }
+    return this.connected;
   }
 
   send(msg: ChatMessage): void {

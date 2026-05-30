@@ -1,4 +1,4 @@
-import { apiFetch, apiUrl, wsUrl } from "@/lib/api";
+import { apiFetch, apiUrl, wsUrlWithAuth } from "@/lib/api";
 import type {
   Book,
   BookDetail,
@@ -229,11 +229,11 @@ export async function getLegacyChatSession(
 
 export type BookWsEvent = { type: string; [key: string]: unknown };
 
-export function openBookSocket(
+export async function openBookSocket(
   onEvent: (event: BookWsEvent) => void,
   onError?: (error: Event) => void,
-): WebSocket {
-  const socket = new WebSocket(wsUrl(`${BASE}/ws`));
+): Promise<WebSocket> {
+  const socket = new WebSocket(await wsUrlWithAuth(`${BASE}/ws`));
   socket.onmessage = (event) => {
     try {
       onEvent(JSON.parse(event.data));

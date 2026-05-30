@@ -127,7 +127,8 @@ function BookPageInner() {
 
   useEffect(() => {
     if (!selectedBookId) return;
-    const socket = openBookSocket((event) => {
+    let socket: WebSocket | null = null;
+    void openBookSocket((event) => {
       // Always feed the progress reducer so the timeline updates live.
       dispatchProgress(event);
 
@@ -145,10 +146,12 @@ function BookPageInner() {
       ) {
         void loadBookDetail(selectedBookId);
       }
+    }).then((ws) => {
+      socket = ws;
     });
     return () => {
       try {
-        socket.close();
+        socket?.close();
       } catch {
         // ignore
       }

@@ -599,6 +599,22 @@ def start(home: str | Path | None = None) -> None:
         "--log-level",
         "info",
     ]
+    # Source checkout: load this tree (not an older site-packages build) + reload.
+    try:
+        import aimtutor as _aimtutor_pkg
+
+        pkg_root = Path(_aimtutor_pkg.__file__).resolve().parent.parent
+        if pkg_root.resolve() == runtime_home.resolve():
+            backend_cmd.append("--reload")
+            py_path = common_env.get("PYTHONPATH", "")
+            common_env["PYTHONPATH"] = (
+                str(runtime_home)
+                if not py_path
+                else f"{runtime_home}{os.pathsep}{py_path}"
+            )
+            _log(f"{_t('start.backend'):<10} (dev reload on)")
+    except Exception:
+        pass
 
     processes: list[ManagedProcess] = []
     backend: ManagedProcess | None = None
