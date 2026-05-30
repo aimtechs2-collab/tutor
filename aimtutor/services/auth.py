@@ -342,7 +342,7 @@ def authenticate(username: str, password: str) -> TokenPayload | None:
     record = users.get(username)
     if not record:
         return None
-    if bool(record.get("disabled", False)):
+    if bool(record.get("disabled", False)) or bool(record.get("banned", False)):
         return None
 
     hashed = record.get("hash", "") if isinstance(record, dict) else record

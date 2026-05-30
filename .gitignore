@@ -28,6 +28,8 @@ web/coverage/
 
 # Local runtime data
 data/
+multi-user/
+.run-logs/
 
 # Logs and local env
 *.log

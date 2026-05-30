@@ -36,6 +36,17 @@ AUTH_DIR = SYSTEM_ROOT / "auth"
 SECRET_FILE = AUTH_DIR / "auth_secret"
 LEGACY_SECRET_FILE = PROJECT_ROOT / "data" / "user" / "auth_secret"
 
+ADMIN_ROLES = frozenset(
+    {
+        "super_admin",
+        "admin",
+        "support_agent",
+        "finance_admin",
+        "ai_safety_admin",
+        "tutor_manager",
+    }
+)
+
 
 def new_user_id() -> str:
     return f"u_{uuid4().hex}"
@@ -106,6 +117,20 @@ def _ensure_schema() -> None:
 
                 ALTER TABLE auth_users
                     ADD COLUMN IF NOT EXISTS ban_reason TEXT DEFAULT '';
+
+                ALTER TABLE auth_users
+                    ADD COLUMN IF NOT EXISTS admin_role TEXT DEFAULT NULL;
+
+                UPDATE auth_users
+                SET admin_role = 'super_admin'
+                WHERE role = 'admin'
+                  AND admin_role IS NULL
+                  AND id = (
+                    SELECT id FROM auth_users
+                    WHERE role = 'admin'
+                    ORDER BY created_at ASC
+                    LIMIT 1
+                  );
                 """
             )
             conn.commit()
@@ -138,6 +163,7 @@ def _row_to_record(row: dict[str, Any]) -> tuple[str, dict[str, Any]]:
         "suspension_reason": str(row.get("suspension_reason") or ""),
         "banned": bool(row.get("banned", False)),
         "ban_reason": str(row.get("ban_reason") or ""),
+        "admin_role": str(row["admin_role"]) if row.get("admin_role") else None,
     }
 
 
@@ -165,7 +191,8 @@ def load_users(  # nosec B107 - empty defaults mean "no env fallback supplied".
                 suspended_at,
                 suspension_reason,
                 banned,
-                ban_reason
+                ban_reason,
+                admin_role
             FROM auth_users
             ORDER BY created_at ASC, username ASC
             """
@@ -198,7 +225,8 @@ def save_user(username: str, hashed_password: str, role: Role = "user") -> dict[
             )
             existing = cur.fetchone()
             cur.execute("SELECT COUNT(*) AS count FROM auth_users")
-            effective_role: Role = "admin" if int(cur.fetchone()["count"]) == 0 else role
+            user_count_before = int(cur.fetchone()["count"])
+            effective_role: Role = "admin" if user_count_before == 0 else role
             user_id = str(existing["id"]) if existing else new_user_id()
             created_at = existing["created_at"] if existing else datetime.now(timezone.utc)
             disabled = bool(existing["disabled"]) if existing else False
@@ -218,6 +246,16 @@ def save_user(username: str, hashed_password: str, role: Role = "user") -> dict[
                 (user_id, username, hashed_password, effective_role, created_at, disabled),
             )
             row = dict(cur.fetchone())
+            if user_count_before == 0 and effective_role == "admin":
+                cur.execute(
+                    """
+                    UPDATE auth_users
+                    SET admin_role = 'super_admin', updated_at = now()
+                    WHERE id = %s
+                    """,
+                    (user_id,),
+                )
+                row["admin_role"] = "super_admin"
             conn.commit()
     _, record = _row_to_record(row)
     return record
@@ -238,6 +276,7 @@ def list_user_info(  # nosec B107 - empty defaults mean "no env fallback supplie
             "suspension_reason": record.get("suspension_reason", ""),
             "banned": bool(record.get("banned", False)),
             "ban_reason": record.get("ban_reason", ""),
+            "admin_role": record.get("admin_role"),
         }
         for username, record in load_users(env_username, env_password_hash).items()
     ]
@@ -262,7 +301,8 @@ def get_user_by_id(user_id: str) -> tuple[str, dict[str, Any]] | None:
                 suspended_at,
                 suspension_reason,
                 banned,
-                ban_reason
+                ban_reason,
+                admin_role
             FROM auth_users
             WHERE id = %s
             """,
@@ -405,6 +445,26 @@ def ban_user(user_id: str, reason: str = "") -> bool:
                 RETURNING id
                 """,
                 (reason, user_id),
+            )
+            updated = cur.fetchone() is not None
+            conn.commit()
+    return updated
+
+
+def set_admin_role(user_id: str, admin_role: str | None) -> bool:
+    if admin_role is not None and admin_role not in ADMIN_ROLES:
+        raise ValueError(f"admin_role must be one of {sorted(ADMIN_ROLES)} or null")
+    _ensure_schema()
+    with _USERS_WRITE_LOCK:
+        with _connect() as conn, conn.cursor() as cur:
+            cur.execute(
+                """
+                UPDATE auth_users
+                SET admin_role = %s, updated_at = now()
+                WHERE id = %s
+                RETURNING id
+                """,
+                (admin_role, user_id),
             )
             updated = cur.fetchone() is not None
             conn.commit()

@@ -12,7 +12,7 @@ import base64 as _b64
 import logging
 from typing import Any
 
-from fastapi import APIRouter, WebSocket, WebSocketDisconnect
+from fastapi import APIRouter, WebSocket, WebSocketDisconnect, HTTPException
 
 from aimtutor.services.config import PROJECT_ROOT, load_config_with_main
 from aimtutor.services.llm import stream as llm_stream
@@ -235,6 +235,24 @@ async def websocket_quiz_judge(websocket: WebSocket):
         return
 
     await websocket.accept()
+
+    from aimtutor.multi_user.context import get_current_user
+    from aimtutor.services.quota_guard import enforce_and_record
+
+    user = get_current_user()
+    if not user.is_admin:
+        try:
+            await enforce_and_record(user.id, "quiz_generations", 1.0)
+        except HTTPException as exc:
+            detail = exc.detail
+            message = (
+                f"Quota exceeded for {detail.get('metric', 'quiz_generations')}"
+                if isinstance(detail, dict)
+                else str(detail)
+            )
+            await websocket.send_json({"type": "error", "content": message})
+            await websocket.close()
+            return
 
     async def safe_send(payload: dict[str, Any]) -> bool:
         try:

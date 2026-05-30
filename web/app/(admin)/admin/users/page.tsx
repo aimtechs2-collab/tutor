@@ -22,6 +22,7 @@ import {
   X,
 } from "lucide-react";
 import Link from "next/link";
+import { adminRoleBadgeClass, adminRoleLabel } from "@/lib/admin-roles";
 
 function formatDate(iso: string): string {
   if (!iso) return "—";
@@ -274,19 +275,28 @@ export default function AdminUsersPage() {
                         </td>
                         <td className="px-5 py-3.5">{statusBadge(user)}</td>
                         <td className="px-5 py-3.5">
-                          <span
-                            className={`inline-flex items-center gap-1 rounded-full px-2.5 py-0.5 text-xs font-medium
+                          <div className="flex flex-wrap items-center gap-1.5">
+                            <span
+                              className={`inline-flex items-center gap-1 rounded-full px-2.5 py-0.5 text-xs font-medium
                             ${
                               user.role === "admin"
                                 ? "bg-purple-500/15 text-purple-600 dark:text-purple-400"
                                 : "bg-[var(--muted)]/50 text-[var(--muted-foreground)]"
                             }`}
-                          >
-                            {user.role === "admin" ? (
-                              <Shield size={11} />
+                            >
+                              {user.role === "admin" ? (
+                                <Shield size={11} />
+                              ) : null}
+                              {user.role}
+                            </span>
+                            {user.admin_role ? (
+                              <span
+                                className={`inline-flex items-center rounded-full border px-2 py-0.5 text-[10px] font-medium ${adminRoleBadgeClass(user.admin_role)}`}
+                              >
+                                {adminRoleLabel(user.admin_role)}
+                              </span>
                             ) : null}
-                            {user.role}
-                          </span>
+                          </div>
                         </td>
                         <td className="px-5 py-3.5 text-[var(--muted-foreground)]">
                           {formatDate(user.created_at)}

@@ -9,6 +9,7 @@ export interface AuthStatus {
   username?: string;
   role?: string;
   is_admin?: boolean;
+  admin_role?: string | null;
 }
 
 /**

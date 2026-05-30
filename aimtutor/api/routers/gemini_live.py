@@ -192,6 +192,13 @@ async def create_token(
     if not _rate_check(user_id):
         raise HTTPException(429, "Too many token requests. Please wait a moment.")
 
+    from aimtutor.multi_user.context import get_current_user
+    from aimtutor.services.quota_guard import enforce_quota
+
+    user = get_current_user()
+    if not user.is_admin:
+        await enforce_quota(user_id, "voice_minutes", 1.0)
+
     live_models = await _live_models()
     if body.model not in {m["id"] for m in live_models}:
         raise HTTPException(400, f"Unsupported model: {body.model}")
@@ -335,6 +342,16 @@ async def voice_session(
             "gemini_live.session_end user=%s duration=%.1fs turns=%d",
             user_id, duration, len(transcript_turns),
         )
+        if user_id and user_id not in {"anonymous", "local-admin"}:
+            from aimtutor.services.quota import record_usage
+
+            voice_minutes = max(
+                duration / 60.0,
+                (model_audio_seconds + user_audio_seconds) / 60.0,
+            )
+            if voice_minutes > 0:
+                with suppress(Exception):
+                    await record_usage(user_id, "voice_minutes", voice_minutes)
         # Write to L1 memory trace
         if transcript_turns:
             with suppress(Exception):

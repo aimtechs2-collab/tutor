@@ -10,13 +10,20 @@ from typing import Any
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 
-from aimtutor.api.routers.auth import require_admin
+from aimtutor.api.routers.auth import (
+    require_admin,
+    require_conversations,
+    require_tutor_manager,
+    require_users_read,
+)
 from aimtutor.knowledge.manager import KnowledgeBaseManager
 from aimtutor.services.config.model_catalog import ModelCatalogService
 from aimtutor.services.skill.service import SkillService
 
 from .audit import log_admin_action
 from .context import get_current_user
+from .conversations_admin import get_admin_conversation, list_admin_conversations
+from .flagged_conversations import create_flag
 from .grants import load_grant, save_grant
 from .identity import get_user_by_id, list_user_info
 from .knowledge_access import admin_kb_base_dir, list_visible_knowledge_bases
@@ -34,6 +41,12 @@ class GrantPayload(BaseModel):
 class SpaceAssignPayload(BaseModel):
     source: str
     target: str | None = None
+
+
+class FlagRequest(BaseModel):
+    user_id: str
+    reason: str = ""
+    flag_type: str
 
 
 def _admin_catalog_summary() -> dict[str, list[dict[str, Any]]]:
@@ -167,7 +180,7 @@ async def put_user_grants(
 
 
 @router.get("/users")
-async def multi_user_list_users(_: object = Depends(require_admin)) -> dict[str, Any]:
+async def multi_user_list_users(_: object = Depends(require_users_read)) -> dict[str, Any]:
     return {"users": list_user_info()}
 
 
@@ -175,7 +188,7 @@ async def multi_user_list_users(_: object = Depends(require_admin)) -> dict[str,
 async def assign_space_template(
     user_id: str,
     payload: SpaceAssignPayload,
-    _: object = Depends(require_admin),
+    _: object = Depends(require_tutor_manager),
 ) -> dict[str, Any]:
     _require_assignable_user(user_id)
 
@@ -216,3 +229,63 @@ async def assign_space_template(
         summary={"source": payload.source, "target": target.name},
     )
     return {"ok": True, "target": str(target.relative_to(user_workspace))}
+
+
+@router.get("/admin/conversations")
+async def admin_list_conversations(
+    user_id: str | None = None,
+    capability: str | None = None,
+    search: str | None = None,
+    flag_filter: str = "all",
+    limit: int = 50,
+    offset: int = 0,
+    _: object = Depends(require_conversations),
+) -> dict[str, Any]:
+    conversations = await list_admin_conversations(
+        user_id=user_id,
+        capability=capability,
+        search=search,
+        flag_filter=flag_filter,
+        limit=max(1, min(limit, 200)),
+        offset=max(0, offset),
+    )
+    return {"conversations": conversations}
+
+
+@router.get("/admin/conversations/{session_id}")
+async def admin_get_conversation(
+    session_id: str,
+    user_id: str,
+    _: object = Depends(require_conversations),
+) -> dict[str, Any]:
+    payload = await get_admin_conversation(session_id, user_id)
+    if payload is None:
+        raise HTTPException(status_code=404, detail="Conversation not found")
+    return payload
+
+
+@router.post("/admin/conversations/{session_id}/flag")
+async def admin_flag_conversation(
+    session_id: str,
+    body: FlagRequest,
+    _: object = Depends(require_conversations),
+) -> dict[str, Any]:
+    actor = get_current_user()
+    flag = await create_flag(
+        session_id=session_id,
+        user_id=body.user_id,
+        flag_type=body.flag_type,
+        reason=body.reason,
+        flagged_by=actor.id,
+    )
+    log_admin_action(
+        "flag_conversation",
+        target_user_id=body.user_id,
+        summary={
+            "session_id": session_id,
+            "flag_type": body.flag_type,
+            "reason": body.reason,
+            "flag_id": flag["id"],
+        },
+    )
+    return {"ok": True, "flag": flag}

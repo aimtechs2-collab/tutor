@@ -3,16 +3,28 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import Link from "next/link";
 import { useParams, useRouter } from "next/navigation";
-import { ArrowLeft, Ban, KeyRound, PauseCircle, PlayCircle, RefreshCw } from "lucide-react";
+import { ArrowLeft, Ban, CreditCard, KeyRound, PauseCircle, PlayCircle, RefreshCw, Shield } from "lucide-react";
 import { notify } from "@/lib/notifications";
 import { fetchAuthStatus } from "@/lib/auth";
 import {
+  ADMIN_ROLE_OPTIONS,
+  adminRoleBadgeClass,
+  adminRoleLabel,
+  canManagePlans,
+} from "@/lib/admin-roles";
+import {
+  assignPlanToUser,
   banUser,
   getUserById,
+  getUserQuota,
+  listPlans,
   resetUserPassword,
+  setAdminRole,
   suspendUser,
   unsuspendUser,
+  type PlanRecord,
   type UserRecord,
+  type UserQuotaSummary,
 } from "@/lib/admin-api";
 
 type ReasonModalMode = "suspend" | "ban";
@@ -71,6 +83,14 @@ export default function AdminUserDetailPage() {
   const [reason, setReason] = useState("");
   const [showPasswordModal, setShowPasswordModal] = useState(false);
   const [newPassword, setNewPassword] = useState("");
+  const [isSuperAdmin, setIsSuperAdmin] = useState(false);
+  const [canAssignPlan, setCanAssignPlan] = useState(false);
+  const [selectedAdminRole, setSelectedAdminRole] = useState("");
+  const [savingAdminRole, setSavingAdminRole] = useState(false);
+  const [plans, setPlans] = useState<PlanRecord[]>([]);
+  const [selectedPlanId, setSelectedPlanId] = useState("");
+  const [userQuota, setUserQuota] = useState<UserQuotaSummary | null>(null);
+  const [savingPlan, setSavingPlan] = useState(false);
 
   const loadUser = useCallback(async () => {
     if (!userId) return;
@@ -84,6 +104,7 @@ export default function AdminUserDetailPage() {
         return;
       }
       setUser(found);
+      setSelectedAdminRole(found.admin_role ?? "");
     } catch (e) {
       setError(e instanceof Error ? e.message : "Failed to load user");
     } finally {
@@ -101,9 +122,30 @@ export default function AdminUserDetailPage() {
         router.replace("/");
         return;
       }
+      setIsSuperAdmin(status.admin_role === "super_admin");
+      setCanAssignPlan(canManagePlans(status.admin_role));
       void loadUser();
     });
   }, [loadUser, router]);
+
+  useEffect(() => {
+    if (!canAssignPlan || !user) return;
+    void (async () => {
+      try {
+        const [planList, quota] = await Promise.all([
+          listPlans(),
+          getUserQuota(user.id),
+        ]);
+        setPlans(planList.filter((plan) => plan.is_active));
+        setUserQuota(quota);
+        const current = planList.find((plan) => plan.name === quota.plan_name);
+        setSelectedPlanId(current?.id ?? "");
+      } catch {
+        setPlans([]);
+        setUserQuota(null);
+      }
+    })();
+  }, [canAssignPlan, user]);
 
   function openReasonModal(mode: ReasonModalMode) {
     setReason("");
@@ -163,6 +205,36 @@ export default function AdminUserDetailPage() {
     }
   }
 
+  async function handleSaveAdminRole() {
+    if (!user) return;
+    setSavingAdminRole(true);
+    try {
+      const nextRole = selectedAdminRole || null;
+      await setAdminRole(user.id, nextRole);
+      notify("Admin role updated", { tone: "success" });
+      await loadUser();
+    } catch (e) {
+      notify(e instanceof Error ? e.message : "Failed to set admin role", { tone: "error" });
+    } finally {
+      setSavingAdminRole(false);
+    }
+  }
+
+  async function handleAssignPlan() {
+    if (!user || !selectedPlanId) return;
+    setSavingPlan(true);
+    try {
+      await assignPlanToUser(user.id, selectedPlanId);
+      notify("Plan assigned", { tone: "success" });
+      const quota = await getUserQuota(user.id);
+      setUserQuota(quota);
+    } catch (e) {
+      notify(e instanceof Error ? e.message : "Failed to assign plan", { tone: "error" });
+    } finally {
+      setSavingPlan(false);
+    }
+  }
+
   return (
     <div className="min-h-screen bg-[var(--background)] px-4 py-10">
       <div className="mx-auto max-w-4xl">
@@ -197,11 +269,18 @@ export default function AdminUserDetailPage() {
             <section className="rounded-2xl border border-[var(--border)] bg-[var(--card)] p-6 shadow-sm">
               <div className="flex flex-col gap-5 md:flex-row md:items-start md:justify-between">
                 <div>
-                  <div className="mb-3 flex items-center gap-2">
+                  <div className="mb-3 flex flex-wrap items-center gap-2">
                     {statusPill(user)}
                     <span className="rounded-full border border-[var(--border)] px-2.5 py-1 text-xs text-[var(--muted-foreground)]">
                       {user.role}
                     </span>
+                    {user.admin_role ? (
+                      <span
+                        className={`inline-flex items-center rounded-full border px-2.5 py-1 text-xs font-medium ${adminRoleBadgeClass(user.admin_role)}`}
+                      >
+                        {adminRoleLabel(user.admin_role)}
+                      </span>
+                    ) : null}
                   </div>
                   <h1 className="text-2xl font-semibold text-[var(--foreground)]">
                     {user.username}
@@ -259,6 +338,90 @@ export default function AdminUserDetailPage() {
                 </div>
               </div>
             </section>
+
+            {isSuperAdmin ? (
+              <section className="rounded-2xl border border-[var(--border)] bg-[var(--card)] p-6 shadow-sm">
+                <div className="mb-4 flex items-center gap-2">
+                  <Shield size={18} className="text-[var(--muted-foreground)]" />
+                  <h2 className="text-base font-semibold text-[var(--foreground)]">Admin Role</h2>
+                </div>
+                <p className="mb-4 text-sm text-[var(--muted-foreground)]">
+                  Assign a SaaS team role for scoped admin access. Requires{" "}
+                  <code className="text-xs">role=admin</code> on the account.
+                </p>
+                <div className="mb-4 flex items-center gap-2">
+                  <span className="text-sm text-[var(--muted-foreground)]">Current:</span>
+                  <span
+                    className={`inline-flex items-center rounded-full border px-2.5 py-1 text-xs font-medium ${adminRoleBadgeClass(user.admin_role)}`}
+                  >
+                    {adminRoleLabel(user.admin_role)}
+                  </span>
+                </div>
+                <label className="block text-xs text-[var(--muted-foreground)]">
+                  Change role
+                  <select
+                    value={selectedAdminRole}
+                    onChange={(e) => setSelectedAdminRole(e.target.value)}
+                    className="mt-1 w-full rounded-lg border border-[var(--border)] bg-transparent px-3 py-2 text-sm text-[var(--foreground)] outline-none focus:border-[var(--primary)]"
+                  >
+                    {ADMIN_ROLE_OPTIONS.map((opt) => (
+                      <option key={opt.value || "none"} value={opt.value}>
+                        {opt.label}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+                <button
+                  onClick={handleSaveAdminRole}
+                  disabled={
+                    savingAdminRole ||
+                    selectedAdminRole === (user.admin_role ?? "")
+                  }
+                  className="mt-4 rounded-lg bg-[var(--foreground)] px-4 py-2 text-sm font-medium text-[var(--background)] transition-opacity hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-40"
+                >
+                  {savingAdminRole ? "Saving…" : "Save Role"}
+                </button>
+              </section>
+            ) : null}
+
+            {canAssignPlan ? (
+              <section className="rounded-2xl border border-[var(--border)] bg-[var(--card)] p-6 shadow-sm">
+                <div className="mb-4 flex items-center gap-2">
+                  <CreditCard size={18} className="text-[var(--muted-foreground)]" />
+                  <h2 className="text-base font-semibold text-[var(--foreground)]">Subscription Plan</h2>
+                </div>
+                {userQuota ? (
+                  <p className="mb-4 text-sm text-[var(--muted-foreground)]">
+                    Current plan:{" "}
+                    <span className="font-medium text-[var(--foreground)]">
+                      {userQuota.plan_display}
+                    </span>
+                  </p>
+                ) : null}
+                <label className="block text-xs text-[var(--muted-foreground)]">
+                  Assign plan
+                  <select
+                    value={selectedPlanId}
+                    onChange={(e) => setSelectedPlanId(e.target.value)}
+                    className="mt-1 w-full rounded-lg border border-[var(--border)] bg-transparent px-3 py-2 text-sm text-[var(--foreground)] outline-none focus:border-[var(--primary)]"
+                  >
+                    <option value="">Select a plan…</option>
+                    {plans.map((plan) => (
+                      <option key={plan.id} value={plan.id}>
+                        {plan.display_name}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+                <button
+                  onClick={handleAssignPlan}
+                  disabled={savingPlan || !selectedPlanId}
+                  className="mt-4 rounded-lg bg-[var(--foreground)] px-4 py-2 text-sm font-medium text-[var(--background)] transition-opacity hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-40"
+                >
+                  {savingPlan ? "Assigning…" : "Assign Plan"}
+                </button>
+              </section>
+            ) : null}
 
             <section className="rounded-2xl border border-[var(--border)] bg-[var(--card)] p-6 text-sm text-[var(--muted-foreground)]">
               User control changes are audited and take effect immediately for password auth.

@@ -26,6 +26,7 @@ from aimtutor.multi_user.audit import log_admin_action
 from aimtutor.multi_user.identity import (
     ban_user,
     reset_user_password,
+    set_admin_role,
     suspend_user,
     unsuspend_user,
 )
@@ -152,6 +153,30 @@ class AuthStatusResponse(BaseModel):
     username: str | None = None
     role: str | None = None
     is_admin: bool = False
+    admin_role: str | None = None
+
+
+class SetAdminRoleRequest(BaseModel):
+    """Payload for the POST /users/{user_id}/admin-role endpoint."""
+
+    admin_role: str | None = None
+
+    @field_validator("admin_role")
+    @classmethod
+    def admin_role_valid(cls, value: str | None) -> str | None:
+        if value is None or value == "":
+            return None
+        allowed = {
+            "super_admin",
+            "admin",
+            "support_agent",
+            "finance_admin",
+            "ai_safety_admin",
+            "tutor_manager",
+        }
+        if value not in allowed:
+            raise ValueError(f"admin_role must be one of {sorted(allowed)}")
+        return value
 
 
 class UserInfo(BaseModel):
@@ -166,6 +191,7 @@ class UserInfo(BaseModel):
     suspension_reason: str = ""
     banned: bool = False
     ban_reason: str = ""
+    admin_role: str | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -193,6 +219,28 @@ def _bearer_token_from_header(authorization: str | None) -> str | None:
 
 def _extract_token(authorization: str | None, dt_token: str | None) -> str | None:
     return _bearer_token_from_header(authorization) or dt_token
+
+
+def _account_status_error(user_id: str | None) -> str | None:
+    if not user_id or user_id == "local-admin":
+        return None
+    from aimtutor.multi_user.identity import get_user_by_id
+
+    result = get_user_by_id(user_id)
+    if result is None:
+        return "User not found"
+    record = result[1]
+    if bool(record.get("banned")):
+        return "Account banned"
+    if bool(record.get("disabled")):
+        return "Account suspended"
+    return None
+
+
+def _raise_if_account_blocked(user_id: str | None) -> None:
+    detail = _account_status_error(user_id)
+    if detail:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=detail)
 
 
 # ---------------------------------------------------------------------------
@@ -256,6 +304,8 @@ async def require_auth(
             headers={"WWW-Authenticate": "Bearer"},
         )
 
+    _raise_if_account_blocked(payload.user_id)
+
     from aimtutor.multi_user.context import set_current_user, user_from_token_payload
 
     set_current_user(user_from_token_payload(payload))
@@ -311,6 +361,11 @@ async def ws_require_auth(ws: WebSocket) -> _CtxToken | _WsAuthFailed:
         await ws.close(code=4001)
         return ws_auth_failed
 
+    blocked = _account_status_error(payload.user_id)
+    if blocked:
+        await ws.close(code=4003, reason=blocked[:123])
+        return ws_auth_failed
+
     return set_current_user(user_from_token_payload(payload))
 
 
@@ -336,9 +391,92 @@ async def require_admin(
     return payload
 
 
+def _resolved_admin_role(user_id: str | None) -> str | None:
+    if not user_id:
+        return None
+    from aimtutor.multi_user.identity import get_user_by_id
+
+    result = get_user_by_id(user_id)
+    if result is None:
+        return None
+    record = result[1]
+    admin_role = record.get("admin_role")
+    if admin_role:
+        return str(admin_role)
+    if str(record.get("role") or "") == "admin":
+        return "admin"
+    return None
+
+
+def require_admin_role(*allowed_roles: str):
+    """FastAPI dependency factory — checks ``admin_role`` for SaaS team roles."""
+
+    async def _dep(payload: TokenPayload | None = Depends(require_auth)) -> TokenPayload:
+        from aimtutor.multi_user.context import get_current_user
+        from aimtutor.multi_user.identity import get_user_by_id
+
+        if not clerk_is_enabled() and not AUTH_ENABLED:
+            from aimtutor.services.auth import TokenPayload as TP
+
+            return TP(username="local", role="admin", user_id="local-admin")
+
+        user = get_current_user()
+        if user.role != "admin":
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Admin access required")
+        if not allowed_roles:
+            if payload is None:
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    detail="Admin access required",
+                )
+            return payload
+        result = get_user_by_id(user.id)
+        admin_role = (result[1].get("admin_role") if result else None) or "admin"
+        if admin_role == "super_admin" or admin_role in allowed_roles:
+            if payload is None:
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    detail="Admin access required",
+                )
+            return payload
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=f"Insufficient role. Required: {list(allowed_roles)}",
+        )
+
+    return _dep
+
+
+require_super_admin = require_admin_role("super_admin")
+require_finance_admin = require_admin_role("super_admin", "finance_admin")
+require_support_agent = require_admin_role("super_admin", "admin", "support_agent")
+require_ai_safety = require_admin_role("super_admin", "admin", "ai_safety_admin")
+require_tutor_manager = require_admin_role("super_admin", "admin", "tutor_manager")
+require_users_read = require_admin_role(
+    "super_admin",
+    "admin",
+    "support_agent",
+    "ai_safety_admin",
+    "tutor_manager",
+)
+require_user_control = require_admin_role("super_admin", "admin", "support_agent")
+require_conversations = require_admin_role(
+    "super_admin",
+    "admin",
+    "support_agent",
+    "ai_safety_admin",
+)
+
+
 # ---------------------------------------------------------------------------
 # Public endpoints (no auth required)
 # ---------------------------------------------------------------------------
+
+
+def _auth_status_admin_role(user_id: str | None, role: str | None) -> str | None:
+    if role != "admin":
+        return None
+    return _resolved_admin_role(user_id)
 
 
 @router.get("/status", response_model=AuthStatusResponse)
@@ -358,6 +496,7 @@ async def auth_status(
             username=payload.username if payload else None,
             role=payload.role if payload else None,
             is_admin=clerk_claims_is_admin(claims) if claims else False,
+            admin_role=None,
         )
 
     if not AUTH_ENABLED:
@@ -368,6 +507,7 @@ async def auth_status(
             username="local",
             role="admin",
             is_admin=True,
+            admin_role="super_admin",
         )
 
     token = _extract_token(authorization, dt_token)
@@ -379,6 +519,10 @@ async def auth_status(
         username=payload.username if payload else None,
         role=payload.role if payload else None,
         is_admin=payload.role == "admin" if payload else False,
+        admin_role=_auth_status_admin_role(
+            payload.user_id if payload else None,
+            payload.role if payload else None,
+        ),
     )
 
 
@@ -557,7 +701,7 @@ async def check_is_first_user() -> dict:
 
 
 @router.get("/users", response_model=list[UserInfo])
-async def get_users(_: TokenPayload = Depends(require_admin)) -> list[UserInfo]:
+async def get_users(_: TokenPayload = Depends(require_users_read)) -> list[UserInfo]:
     """List all registered users. Requires admin role."""
     return [UserInfo(**u) for u in list_users()]
 
@@ -673,7 +817,7 @@ async def update_user_role(
 async def suspend_registered_user(
     user_id: str,
     body: SuspendRequest,
-    _: TokenPayload = Depends(require_admin),
+    _: TokenPayload = Depends(require_user_control),
 ) -> dict:
     """Suspend a user account by id. Requires admin role."""
     updated = suspend_user(user_id, body.reason)
@@ -690,7 +834,7 @@ async def suspend_registered_user(
 @router.post("/users/{user_id}/unsuspend", status_code=status.HTTP_200_OK)
 async def unsuspend_registered_user(
     user_id: str,
-    _: TokenPayload = Depends(require_admin),
+    _: TokenPayload = Depends(require_user_control),
 ) -> dict:
     """Unsuspend a user account by id. Requires admin role."""
     updated = unsuspend_user(user_id)
@@ -707,7 +851,7 @@ async def unsuspend_registered_user(
 async def ban_registered_user(
     user_id: str,
     body: BanRequest,
-    _: TokenPayload = Depends(require_admin),
+    _: TokenPayload = Depends(require_user_control),
 ) -> dict:
     """Ban a user account by id. Requires admin role."""
     updated = ban_user(user_id, body.reason)
@@ -725,7 +869,7 @@ async def ban_registered_user(
 async def reset_registered_user_password(
     user_id: str,
     body: ResetPasswordRequest,
-    _: TokenPayload = Depends(require_admin),
+    _: TokenPayload = Depends(require_user_control),
 ) -> dict:
     """Reset a user's password by id. Requires admin role."""
     hashed_pw = bcrypt.hashpw(body.new_password.encode(), bcrypt.gensalt()).decode()
@@ -734,3 +878,24 @@ async def reset_registered_user_password(
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found")
     log_admin_action("reset_password", target_user_id=user_id, summary={})
     return {"ok": True}
+
+
+@router.post("/users/{user_id}/admin-role", status_code=status.HTTP_200_OK)
+async def set_registered_user_admin_role(
+    user_id: str,
+    body: SetAdminRoleRequest,
+    _: TokenPayload = Depends(require_super_admin),
+) -> dict:
+    """Set a user's SaaS admin role. Requires super_admin."""
+    try:
+        updated = set_admin_role(user_id, body.admin_role)
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+    if not updated:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found")
+    log_admin_action(
+        "set_admin_role",
+        target_user_id=user_id,
+        summary={"admin_role": body.admin_role},
+    )
+    return {"ok": True, "user_id": user_id, "admin_role": body.admin_role}

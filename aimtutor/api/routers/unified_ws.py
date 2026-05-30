@@ -30,7 +30,7 @@ import json
 import logging
 from typing import Any
 
-from fastapi import APIRouter, WebSocket, WebSocketDisconnect
+from fastapi import APIRouter, HTTPException, WebSocket, WebSocketDisconnect
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
@@ -103,7 +103,34 @@ async def unified_websocket(ws: WebSocket) -> None:
             msg_type = msg.get("type")
 
             if msg_type in {"message", "start_turn"}:
+                from aimtutor.multi_user.context import get_current_user
+                from aimtutor.services.quota_guard import enforce_and_record
                 from aimtutor.services.session import get_turn_runtime_manager
+
+                user = get_current_user()
+                if not user.is_admin:
+                    try:
+                        await enforce_and_record(user.id, "chat_messages", 1.0)
+                    except HTTPException as exc:
+                        detail = exc.detail
+                        message = (
+                            detail.get("metric", "chat_messages")
+                            if isinstance(detail, dict)
+                            else str(detail)
+                        )
+                        await safe_send(
+                            {
+                                "type": "error",
+                                "source": "unified_ws",
+                                "stage": "",
+                                "content": f"Quota exceeded for {message}.",
+                                "metadata": {"turn_terminal": True, "status": "quota_exceeded"},
+                                "session_id": str(msg.get("session_id") or ""),
+                                "turn_id": "",
+                                "seq": 0,
+                            }
+                        )
+                        continue
 
                 runtime = get_turn_runtime_manager()
                 try:
@@ -220,7 +247,34 @@ async def unified_websocket(ws: WebSocket) -> None:
                 if not session_id:
                     await safe_send({"type": "error", "content": "Missing session_id."})
                     continue
+                from aimtutor.multi_user.context import get_current_user
+                from aimtutor.services.quota_guard import enforce_and_record
                 from aimtutor.services.session import get_turn_runtime_manager
+
+                user = get_current_user()
+                if not user.is_admin:
+                    try:
+                        await enforce_and_record(user.id, "chat_messages", 1.0)
+                    except HTTPException as exc:
+                        detail = exc.detail
+                        message = (
+                            detail.get("metric", "chat_messages")
+                            if isinstance(detail, dict)
+                            else str(detail)
+                        )
+                        await safe_send(
+                            {
+                                "type": "error",
+                                "source": "unified_ws",
+                                "stage": "",
+                                "content": f"Quota exceeded for {message}.",
+                                "metadata": {"turn_terminal": True, "status": "quota_exceeded"},
+                                "session_id": session_id,
+                                "turn_id": "",
+                                "seq": 0,
+                            }
+                        )
+                        continue
 
                 runtime = get_turn_runtime_manager()
                 overrides = msg.get("overrides") if isinstance(msg.get("overrides"), dict) else None
