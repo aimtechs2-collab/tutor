@@ -42,6 +42,8 @@ for _mod in [
 _auth = sys.modules["aimtutor.api.routers.auth"]
 _auth.require_auth = lambda: None
 _auth.require_admin = lambda: None
+_auth.ws_require_auth = None
+_auth.ws_auth_failed = None
 
 # session stub
 _sess = sys.modules["aimtutor.services.session"]
@@ -91,21 +93,21 @@ def test_api_key_missing(monkeypatch):
 def test_rate_ok_allows_within_limit():
     key = f"test-{uuid.uuid4()}"
     for _ in range(5):
-        assert gl._rate_ok(key, max_calls=10, window=60.0) is True
+        assert gl._rate_check(key, max_calls=10, window=60.0) is True
 
 
 def test_rate_ok_blocks_over_limit():
     key = f"test-{uuid.uuid4()}"
     for _ in range(10):
-        gl._rate_ok(key, max_calls=10, window=60.0)
-    assert gl._rate_ok(key, max_calls=10, window=60.0) is False
+        gl._rate_check(key, max_calls=10, window=60.0)
+    assert gl._rate_check(key, max_calls=10, window=60.0) is False
 
 
 def test_rate_ok_resets_after_window():
     key = f"test-{uuid.uuid4()}"
     # Fill the bucket with old timestamps
     gl._rate_buckets[key] = [time.monotonic() - 120] * 10
-    assert gl._rate_ok(key, max_calls=10, window=60.0) is True
+    assert gl._rate_check(key, max_calls=10, window=60.0) is True
 
 
 # ── token registry cleanup ────────────────────────────────────────────────
@@ -169,26 +171,34 @@ async def test_create_token_rate_limited_returns_429():
 
 
 @pytest.mark.anyio
+@pytest.mark.anyio
 async def test_create_token_success():
     uid = f"user-{uuid.uuid4()}"
     payload = MagicMock(); payload.user_id = uid
-    result = await gl.create_token(gl.TokenRequest(), payload)
+    mock_models = [{"id": "gemini-2.5-flash-native-audio-latest", "display_name": "Test", "affective_dialog": False}]
+    with patch("aimtutor.api.routers.gemini_live._live_models", AsyncMock(return_value=mock_models)):
+        result = await gl.create_token(
+            gl.TokenRequest(model="gemini-2.5-flash-native-audio-latest"), payload
+        )
+    import hashlib
     assert "token" in result
     assert "expires_at" in result
-    assert result["model"] == "gemini-2.0-flash-live-001"
-    # Token registered and single-use (we remove it after WS connects, not here)
-    assert result["token"] in gl._token_registry
-    del gl._token_registry[result["token"]]
+    token_hash = hashlib.sha256(result["token"].encode()).hexdigest()
+    assert token_hash in gl._token_registry
+    del gl._token_registry[token_hash]
 
 
 @pytest.mark.anyio
-async def test_create_token_invalid_model_defaults():
+async def test_create_token_invalid_model_rejected():
+    """Codex version raises 400 for invalid models (no longer silently defaults)."""
     uid = f"user-{uuid.uuid4()}"
     payload = MagicMock(); payload.user_id = uid
-    req = gl.TokenRequest(model="invalid-model-xyz")
-    result = await gl.create_token(req, payload)
-    assert result["model"] == "gemini-2.0-flash-live-001"
-    del gl._token_registry[result["token"]]
+    from fastapi import HTTPException
+    mock_models = [{"id": "gemini-2.5-flash-native-audio-latest", "display_name": "T", "affective_dialog": False}]
+    with patch("aimtutor.api.routers.gemini_live._live_models", AsyncMock(return_value=mock_models)):
+        with pytest.raises(HTTPException) as exc:
+            await gl.create_token(gl.TokenRequest(model="invalid-xyz"), payload)
+        assert exc.value.status_code == 400
 
 
 # ── tool declarations ─────────────────────────────────────────────────────
