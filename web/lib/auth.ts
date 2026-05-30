@@ -1,6 +1,30 @@
 import { apiFetch, apiUrl } from "@/lib/api";
 
 export const AUTH_ENABLED = process.env.NEXT_PUBLIC_AUTH_ENABLED === "true";
+export const CLERK_AUTH_ENABLED =
+  process.env.NEXT_PUBLIC_AUTH_PROVIDER === "clerk" &&
+  Boolean(process.env.NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY);
+
+function signInRedirectPath(nextPath: string): string {
+  if (CLERK_AUTH_ENABLED) {
+    return `/sign-in?redirect_url=${encodeURIComponent(nextPath)}`;
+  }
+  return `/login?next=${encodeURIComponent(nextPath)}`;
+}
+
+async function waitForClerkToken(maxMs = 10_000): Promise<string | null> {
+  if (!CLERK_AUTH_ENABLED || typeof window === "undefined") {
+    return null;
+  }
+  const deadline = Date.now() + maxMs;
+  while (Date.now() < deadline) {
+    const token =
+      (await window.__aimtutorGetClerkToken?.()) || window.__aimtutorClerkToken;
+    if (token) return token;
+    await new Promise((resolve) => setTimeout(resolve, 100));
+  }
+  return null;
+}
 
 export interface AuthStatus {
   enabled: boolean;
@@ -16,8 +40,13 @@ export interface AuthStatus {
  * Call the backend to check whether the current session is authenticated.
  * Returns null on network error so callers can decide how to handle it.
  */
-export async function fetchAuthStatus(): Promise<AuthStatus | null> {
+export async function fetchAuthStatus(options?: {
+  waitForClerk?: boolean;
+}): Promise<AuthStatus | null> {
   try {
+    if (options?.waitForClerk !== false && CLERK_AUTH_ENABLED) {
+      await waitForClerkToken();
+    }
     const res = await apiFetch(apiUrl("/api/v1/auth/status"));
     if (!res.ok) return null;
     return res.json();
@@ -25,6 +54,8 @@ export async function fetchAuthStatus(): Promise<AuthStatus | null> {
     return null;
   }
 }
+
+export { signInRedirectPath };
 
 /**
  * POST credentials to the backend. Returns true on success.

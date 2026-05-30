@@ -86,6 +86,20 @@ export const AUTOMATION_TEMPLATES = [
   },
 ] as const;
 
+export function triggerParamFromTrigger(
+  trigger: Record<string, unknown>,
+  fallback: number,
+): number {
+  const raw =
+    trigger.days ??
+    trigger.percent ??
+    trigger.within_hours ??
+    trigger.hour_utc ??
+    fallback;
+  const numeric = Number(raw);
+  return Number.isFinite(numeric) ? numeric : fallback;
+}
+
 async function parseError(res: Response, fallback: string): Promise<string> {
   const data = await res.json().catch(() => ({}));
   const detail = data?.detail;

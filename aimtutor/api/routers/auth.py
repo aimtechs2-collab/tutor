@@ -499,7 +499,10 @@ async def auth_status(
             username=payload.username if payload else None,
             role=payload.role if payload else None,
             is_admin=clerk_claims_is_admin(claims) if claims else False,
-            admin_role=None,
+            admin_role=_auth_status_admin_role(
+                payload.user_id if payload else None,
+                payload.role if payload else None,
+            ),
         )
 
     if not AUTH_ENABLED:

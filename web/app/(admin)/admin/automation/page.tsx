@@ -12,6 +12,7 @@ import {
   fetchAutomationLogs,
   fetchAutomationRules,
   formatTriggerLabel,
+  triggerParamFromTrigger,
   runAutomationRuleNow,
   toggleAutomationRule,
   updateAutomationRule,
@@ -62,7 +63,7 @@ export default function AdminAutomationPage() {
   const [name, setName] = useState("");
   const [description, setDescription] = useState("");
   const [enabled, setEnabled] = useState(true);
-  const [triggerType, setTriggerType] = useState(AUTOMATION_TRIGGERS[0].type);
+  const [triggerType, setTriggerType] = useState<string>(AUTOMATION_TRIGGERS[0].type);
   const [triggerParam, setTriggerParam] = useState(String(AUTOMATION_TRIGGERS[0].defaultValue));
   const [triggerMetric, setTriggerMetric] = useState("chat_messages");
   const [actions, setActions] = useState<Array<Record<string, unknown>>>([
@@ -112,13 +113,7 @@ export default function AdminAutomationPage() {
     const type = String(rule.trigger.type ?? AUTOMATION_TRIGGERS[0].type);
     setTriggerType(type);
     const def = AUTOMATION_TRIGGERS.find((item) => item.type === type) ?? AUTOMATION_TRIGGERS[0];
-    const param =
-      rule.trigger.days ??
-      rule.trigger.percent ??
-      rule.trigger.within_hours ??
-      rule.trigger.hour_utc ??
-      def.defaultValue;
-    setTriggerParam(String(param));
+    setTriggerParam(String(triggerParamFromTrigger(rule.trigger, def.defaultValue)));
     setTriggerMetric(String(rule.trigger.metric ?? "chat_messages"));
     setActions(rule.actions.length > 0 ? rule.actions.map((action) => ({ ...action })) : [emptyAction("send_in_app_notification")]);
   }, []);
@@ -158,14 +153,9 @@ export default function AdminAutomationPage() {
     const type = String(template.trigger.type);
     setTriggerType(type);
     const def = AUTOMATION_TRIGGERS.find((item) => item.type === type) ?? AUTOMATION_TRIGGERS[0];
-    const param =
-      template.trigger.days ??
-      template.trigger.percent ??
-      template.trigger.within_hours ??
-      template.trigger.hour_utc ??
-      def.defaultValue;
-    setTriggerParam(String(param));
-    setTriggerMetric(String(template.trigger.metric ?? "chat_messages"));
+    const trigger = template.trigger as Record<string, unknown>;
+    setTriggerParam(String(triggerParamFromTrigger(trigger, def.defaultValue)));
+    setTriggerMetric(String(trigger.metric ?? "chat_messages"));
     setActions(template.actions.map((action) => ({ ...action })));
   }
 
