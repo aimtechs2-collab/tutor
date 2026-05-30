@@ -182,6 +182,38 @@ async def delete_turn_by_message(session_id: str, message_id: int):
     return result
 
 
+
+@router.post("/{session_id}/voice-transcript")
+async def append_voice_transcript(
+    session_id: str,
+    payload: dict,
+):
+    """Append a completed voice session transcript to chat history."""
+    turns = payload.get("turns", [])
+    duration = payload.get("duration_seconds", 0)
+    if not turns:
+        return {"status": "ok", "appended": 0}
+
+    store = get_sqlite_session_store()
+    session = await store.get_session(session_id)
+    if session is None:
+        raise HTTPException(status_code=404, detail="Session not found")
+
+    # Build a single readable summary message
+    lines = [f"🎙 **Voice Session** ({int(duration // 60)}m {int(duration % 60)}s)\n"]
+    for t in turns:
+        role = "**You:**" if t.get("role") == "user" else "**Tutor:**"
+        lines.append(f"{role} {t.get('text', '').strip()}")
+
+    content = "\n\n".join(lines)
+    await store.add_message(
+        session_id=session_id,
+        role="assistant",
+        content=content,
+        capability="chat",
+    )
+    return {"status": "ok", "appended": len(turns)}
+
 @router.post("/{session_id}/quiz-results")
 async def record_quiz_results(session_id: str, payload: QuizResultsRequest):
     if not payload.answers:

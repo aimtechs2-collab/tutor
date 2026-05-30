@@ -35,6 +35,7 @@ interface GeminiLivePanelProps {
   className?: string;
   onClose?: () => void;
   onTranscriptUpdate?: (turns: TranscriptTurn[]) => void;
+  onSessionEnd?: (turns: TranscriptTurn[], durationSecs: number) => void;
 }
 
 // ── constants ─────────────────────────────────────────────────────────────
@@ -171,6 +172,7 @@ export default function GeminiLivePanel({
   className = "",
   onClose,
   onTranscriptUpdate,
+  onSessionEnd,
 }: GeminiLivePanelProps) {
   const [selectedVoice, setSelectedVoice] = useState(defaultVoice);
   const [affective, setAffective] = useState(false);
@@ -409,7 +411,7 @@ export default function GeminiLivePanel({
           ) : (
             <>
               <button
-                onClick={stopSession}
+                onClick={handleStop}
                 className="flex flex-1 items-center justify-center gap-2 rounded-lg py-2 text-sm font-medium transition-all"
                 style={{
                   background: "rgba(239,68,68,0.15)",

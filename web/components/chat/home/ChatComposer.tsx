@@ -859,6 +859,23 @@ function VoiceTutorButton({
 }) {
   const [open, setOpen] = useVoiceState(false);
   const [enabled, setEnabled] = useVoiceState<boolean | null>(null);
+  const sessionStartRef = useVoiceRef<number>(0);
+
+  const handleTranscriptUpdate = useCallback(
+    async (turns: Array<{ role: string; text: string; ts: number }>, durationSecs: number) => {
+      if (!sessionId || !turns.length) return;
+      try {
+        await apiFetch(apiUrl(`/api/v1/sessions/${sessionId}/voice-transcript`), {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ turns, duration_seconds: durationSecs }),
+        });
+      } catch {
+        // Non-fatal — transcript sync failure should not break voice UX
+      }
+    },
+    [sessionId],
+  );
 
   useEffect(() => {
     let cancelled = false;
@@ -911,6 +928,7 @@ function VoiceTutorButton({
           <Suspense fallback={null}>
             <GeminiLivePanel
               sessionId={sessionId}
+              onSessionEnd={handleTranscriptUpdate}
               kbName={kbName}
               onClose={() => setOpen(false)}
             />
