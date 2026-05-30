@@ -305,7 +305,8 @@ from aimtutor.api.routers import (
 )
 from aimtutor.multi_user.router import router as multi_user_router  # noqa: E402
 from aimtutor.api.routers.gemini_live import router as gemini_live_router  # noqa: E402
-from aimtutor.api.routers.quotas import router as quotas_router  # noqa: E402
+from aimtutor.api.routers.quotas import router as quotas_router
+from aimtutor.api.routers.reports import router as reports_router  # noqa: E402  # noqa: E402
 
 # Auth router is public — login/logout/register/status require no token
 app.include_router(auth.router, prefix="/api/v1/auth", tags=["auth"])
@@ -334,6 +335,7 @@ app.include_router(
     dashboard.router, prefix="/api/v1/dashboard", tags=["dashboard"], dependencies=_auth
 )
 app.include_router(quotas_router, prefix="/api/v1/quota", tags=["quota"], dependencies=_auth)
+app.include_router(reports_router, prefix="/api/v1", tags=["reports"])
 app.include_router(
     co_writer.router, prefix="/api/v1/co_writer", tags=["co_writer"], dependencies=_auth
 )

@@ -289,3 +289,137 @@ async def admin_flag_conversation(
         },
     )
     return {"ok": True, "flag": flag}
+
+
+# ── Admin overview / audit / risk summary ────────────────────────────────
+
+from aimtutor.api.routers.auth import require_admin  # noqa: E402 (already imported above)
+import asyncio as _asyncio  # noqa: E402
+
+
+@router.get("/admin/overview")
+async def admin_overview(_: Any = Depends(require_admin)) -> dict[str, Any]:
+    """Aggregated stats for the admin overview dashboard."""
+    from aimtutor.multi_user.flagged_conversations import list_unresolved_flags
+    from aimtutor.multi_user.audit import get_audit_log
+    from aimtutor.services.quota import list_plans, list_plan_users
+
+    users = list_user_info()
+    active = [u for u in users if not u.get("disabled")]
+    suspended = [u for u in users if u.get("disabled") and not u.get("banned")]
+    banned = [u for u in users if u.get("banned")]
+    admins = [u for u in active if u.get("role") == "admin"]
+
+    # Flagged convs
+    try:
+        unresolved_flags = await list_unresolved_flags()
+    except Exception:
+        unresolved_flags = []
+
+    # Recent audit actions
+    try:
+        recent_audit = get_audit_log(limit=5)
+    except Exception:
+        recent_audit = []
+
+    # Plan distribution
+    try:
+        plans = await list_plans()
+        plan_dist = [{"name": p["display_name"], "count": p["user_count"]} for p in plans]
+    except Exception:
+        plan_dist = []
+
+    return {
+        "users": {
+            "total": len(active),
+            "suspended": len(suspended),
+            "banned": len(banned),
+            "admins": len(admins),
+        },
+        "risk": {
+            "unresolved_flags": len(unresolved_flags),
+            "flag_types": _count_by(unresolved_flags, "flag_type"),
+        },
+        "plans": plan_dist,
+        "recent_audit": recent_audit,
+    }
+
+
+def _count_by(items: list[dict], key: str) -> dict[str, int]:
+    counts: dict[str, int] = {}
+    for item in items:
+        k = str(item.get(key, "unknown"))
+        counts[k] = counts.get(k, 0) + 1
+    return counts
+
+
+@router.get("/admin/audit")
+async def admin_audit_log(
+    limit: int = 200,
+    action: str | None = None,
+    _: Any = Depends(require_admin),
+) -> list[dict[str, Any]]:
+    """Paginated admin audit log."""
+    from aimtutor.multi_user.audit import get_audit_log
+    return get_audit_log(limit=limit, action_filter=action or None)
+
+
+@router.get("/admin/risk/flags")
+async def admin_risk_flags(
+    resolved: bool | None = None,
+    _: Any = Depends(require_admin),
+) -> list[dict[str, Any]]:
+    """All flagged conversations, enriched with username."""
+    from aimtutor.multi_user.flagged_conversations import list_unresolved_flags
+    from aimtutor.services.db import connect
+
+    try:
+        if resolved is False or resolved is None:
+            flags = await list_unresolved_flags()
+        else:
+            import asyncio
+            def _all_flags():
+                from aimtutor.services.db import connect as _c
+                with _c() as conn, conn.cursor() as cur:
+                    cur.execute(
+                        "SELECT id,session_id,user_id,flag_type,reason,flagged_by,resolved,created_at "
+                        "FROM flagged_conversations ORDER BY created_at DESC LIMIT 500"
+                    )
+                    return [dict(r) for r in cur.fetchall()]
+            flags = await asyncio.to_thread(_all_flags)
+    except Exception:
+        flags = []
+
+    users_by_id = {u.get("id", ""): u.get("username", "") for u in list_user_info()}
+    for flag in flags:
+        flag["username"] = users_by_id.get(flag.get("user_id", ""), "unknown")
+        if hasattr(flag.get("created_at"), "isoformat"):
+            flag["created_at"] = flag["created_at"].isoformat()
+    return flags
+
+
+@router.post("/admin/risk/flags/{flag_id}/resolve")
+async def admin_resolve_flag(
+    flag_id: str,
+    _: Any = Depends(require_admin),
+) -> dict[str, Any]:
+    """Mark a flagged conversation as resolved."""
+    import asyncio
+    from aimtutor.multi_user.audit import log_admin_action
+
+    def _resolve():
+        from aimtutor.services.db import connect as _c
+        with _c() as conn, conn.cursor() as cur:
+            cur.execute(
+                "UPDATE flagged_conversations SET resolved=TRUE WHERE id=%s RETURNING id",
+                (flag_id,),
+            )
+            updated = cur.fetchone() is not None
+            conn.commit()
+        return updated
+
+    updated = await asyncio.to_thread(_resolve)
+    if not updated:
+        raise HTTPException(status_code=404, detail="Flag not found")
+    log_admin_action("resolve_flag", summary={"flag_id": flag_id})
+    return {"ok": True}
