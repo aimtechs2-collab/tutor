@@ -420,7 +420,7 @@ async def logout(response: Response) -> dict:
 
 
 @router.post("/register", status_code=status.HTTP_201_CREATED)
-async def register(body: RegisterRequest) -> dict:
+async def register(body: RegisterRequest, response: Response) -> dict:
     """
     Bootstrap-only registration.
 
@@ -488,6 +488,15 @@ async def register(body: RegisterRequest) -> dict:
             user_id = str(item.get("id") or "")
             role = str(item.get("role") or "user")
             break
+    token = create_token(body.username, role, user_id)
+    response.set_cookie(
+        key=_COOKIE_NAME,
+        value=token,
+        httponly=True,
+        samesite=_SAMESITE,
+        max_age=_COOKIE_MAX_AGE,
+        secure=_SECURE,
+    )
     logger.info(f"First user (admin) registered: '{body.username}'")
     return {
         "ok": True,

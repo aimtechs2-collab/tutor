@@ -116,7 +116,9 @@ export function apiUrl(path: string): string {
  * @returns WebSocket URL (e.g., 'ws://localhost:8001/api/v1/ws')
  */
 const AUTH_ENABLED = process.env.NEXT_PUBLIC_AUTH_ENABLED === "true";
-const CLERK_ENABLED = Boolean(process.env.NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY);
+const CLERK_ENABLED =
+  process.env.NEXT_PUBLIC_AUTH_PROVIDER === "clerk" &&
+  Boolean(process.env.NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY);
 
 declare global {
   interface Window {

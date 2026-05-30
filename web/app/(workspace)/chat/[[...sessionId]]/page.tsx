@@ -1943,6 +1943,7 @@ export default function ChatPage() {
               skillsAutoMode={skillsAutoMode}
               selectedMemoryFiles={selectedMemoryFiles}
               selectedKnowledgeBases={state.knowledgeBases}
+              sessionId={state.sessionId}
               isStreaming={state.isStreaming}
               isVisualizeMode={isVisualizeMode}
               capabilityNeedsConfig={capabilityNeedsConfig}

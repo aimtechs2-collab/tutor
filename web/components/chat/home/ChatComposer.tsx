@@ -22,6 +22,7 @@ import {
   type LucideIcon,
 } from "lucide-react";
 import { lazy, Suspense, useState as useVoiceState } from "react";
+import { apiFetch, apiUrl } from "@/lib/api";
 
 const GeminiLivePanel = lazy(() => import("@/components/gemini-live/GeminiLivePanel"));
 import {
@@ -105,6 +106,7 @@ export default memo(function ChatComposer({
   skillsAutoMode,
   selectedMemoryFiles,
   selectedKnowledgeBases,
+  sessionId,
   isStreaming,
   isVisualizeMode,
   capabilityNeedsConfig,
@@ -178,6 +180,7 @@ export default memo(function ChatComposer({
   skillsAutoMode: boolean;
   selectedMemoryFiles: SpaceMemoryFile[];
   selectedKnowledgeBases: string[];
+  sessionId?: string | null;
   isStreaming: boolean;
   isVisualizeMode: boolean;
   /**
@@ -235,6 +238,7 @@ export default memo(function ChatComposer({
 }) {
   const { t } = useTranslation();
   const CapIcon = activeCap.icon;
+  const activeKbName = selectedKnowledgeBases[0] || "";
 
   const [hasContent, setHasContent] = useState(false);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
@@ -785,7 +789,10 @@ export default memo(function ChatComposer({
                 />
 
                 {/* Gemini Live voice button */}
-                <VoiceTutorButton sessionId={sessionId} kbName={activeKbName} />
+                <VoiceTutorButton
+                  sessionId={sessionId || undefined}
+                  kbName={activeKbName}
+                />
                 {isStreaming ? (
                   <button
                     type="button"
@@ -853,33 +860,50 @@ function VoiceTutorButton({
   const [open, setOpen] = useVoiceState(false);
   const [enabled, setEnabled] = useVoiceState<boolean | null>(null);
 
-  // Check if Gemini Live is configured on first render
-  if (typeof window !== "undefined" && enabled === null) {
-    fetch("/api/v1/gemini-live/config", { credentials: "include" })
-      .then((r) => r.json())
-      .then((d) => setEnabled(d.enabled))
-      .catch(() => setEnabled(false));
-  }
-
-  if (!enabled) return null;
+  useEffect(() => {
+    let cancelled = false;
+    apiFetch(apiUrl("/api/v1/gemini-live/config"))
+      .then((r) => (r.ok ? r.json() : Promise.reject()))
+      .then((d) => {
+        if (!cancelled) setEnabled(Boolean(d.enabled));
+      })
+      .catch(() => {
+        if (!cancelled) setEnabled(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   return (
     <>
       <button
         type="button"
-        onClick={() => setOpen((o) => !o)}
-        title="Live Voice Tutoring (Gemini Live)"
-        aria-label="Start voice session"
-        className={`rounded-full p-[7px] transition-all ${
+        onClick={() => {
+          if (enabled) setOpen((o) => !o);
+        }}
+        disabled={!enabled}
+        title={
+          enabled === null
+            ? "Checking Gemini Live..."
+            : enabled
+              ? "Live Voice Tutoring (Gemini Live)"
+              : "Gemini Live is not configured"
+        }
+        aria-label="Gemini Live voice tutoring"
+        className={`inline-flex h-[29px] shrink-0 items-center gap-1.5 rounded-full px-2.5 text-[12px] font-medium transition-all disabled:cursor-not-allowed disabled:opacity-55 ${
           open
             ? "bg-teal-500/20 text-teal-400 shadow-[0_0_10px_rgba(20,184,166,0.3)]"
-            : "bg-[var(--muted)] text-[var(--muted-foreground)] hover:bg-teal-500/15 hover:text-teal-400"
+            : enabled
+              ? "bg-teal-500/10 text-teal-600 hover:bg-teal-500/15 hover:text-teal-500"
+              : "bg-[var(--muted)] text-[var(--muted-foreground)]"
         }`}
       >
         <Mic size={15} strokeWidth={2} />
+        <span className="hidden sm:inline">Live</span>
       </button>
 
-      {open && (
+      {enabled && open && (
         <div
           className="absolute bottom-full right-0 mb-3 z-50"
           style={{ filter: "drop-shadow(0 20px 60px rgba(0,0,0,0.5))" }}
