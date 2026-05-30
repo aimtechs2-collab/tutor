@@ -436,3 +436,68 @@ async def admin_resolve_flag(
         raise HTTPException(status_code=404, detail="Flag not found")
     log_admin_action("resolve_flag", summary={"flag_id": flag_id})
     return {"ok": True}
+
+
+@router.get("/admin/progress")
+async def admin_progress(
+    _: Any = Depends(require_admin),
+) -> list[dict[str, Any]]:
+    """Per-user progress stats for the progress analytics page."""
+    from aimtutor.multi_user.context import reset_current_user, set_current_user
+    from aimtutor.multi_user.models import CurrentUser
+    from aimtutor.multi_user.paths import scope_for_user
+    from aimtutor.services.session import get_session_store
+    from aimtutor.services.quota import get_user_plan_limits
+    from datetime import datetime, timezone
+
+    users = list_user_info()
+    results: list[dict[str, Any]] = []
+
+    for user_info in users:
+        uid = str(user_info.get("id", ""))
+        username = str(user_info.get("username", uid))
+        role = str(user_info.get("role", "user"))
+        if not uid or user_info.get("disabled"):
+            continue
+        try:
+            user = CurrentUser(
+                id=uid, username=username, role=role,
+                scope=scope_for_user(uid, is_admin=role == "admin"),
+            )
+            token = set_current_user(user)
+            try:
+                store = get_session_store()
+                sessions = await store.list_sessions(limit=500, offset=0)
+                quiz_sessions = [s for s in sessions if s.get("capability") in ("question", "quiz")]
+                today = datetime.now(timezone.utc).date()
+                active_dates = sorted(
+                    {datetime.fromtimestamp(s.get("updated_at", 0), tz=timezone.utc).date()
+                     for s in sessions if s.get("updated_at", 0) > 0},
+                    reverse=True,
+                )
+                streak = 0
+                for i, d in enumerate(active_dates):
+                    if (today - d).days == i:
+                        streak += 1
+                    else:
+                        break
+                last_ts = max((s.get("updated_at", 0) for s in sessions), default=0)
+                plan_limits = await get_user_plan_limits(uid)
+                results.append({
+                    "user_id": uid,
+                    "username": username,
+                    "plan_name": plan_limits.get("plan_name", "free"),
+                    "total_sessions": len(sessions),
+                    "quiz_sessions": len(quiz_sessions),
+                    "voice_minutes": 0.0,
+                    "streak_days": streak,
+                    "last_active": (
+                        datetime.fromtimestamp(last_ts, tz=timezone.utc).isoformat()
+                        if last_ts else None
+                    ),
+                })
+            finally:
+                reset_current_user(token)
+        except Exception as exc:
+            logger.warning("admin_progress: failed for %s: %s", uid, exc)
+    return sorted(results, key=lambda x: x.get("streak_days", 0), reverse=True)
