@@ -3,6 +3,30 @@
 const fs = require("fs");
 const path = require("path");
 
+function loadParentDotenv() {
+  const envPath = path.resolve(__dirname, "..", ".env");
+  try {
+    const text = fs.readFileSync(envPath, "utf8");
+    for (const rawLine of text.split(/\r?\n/)) {
+      const line = rawLine.trim();
+      if (!line || line.startsWith("#")) continue;
+      const eq = line.indexOf("=");
+      if (eq <= 0) continue;
+      const key = line.slice(0, eq).trim();
+      let value = line.slice(eq + 1).trim();
+      if (
+        (value.startsWith('"') && value.endsWith('"')) ||
+        (value.startsWith("'") && value.endsWith("'"))
+      ) {
+        value = value.slice(1, -1);
+      }
+      if (!process.env[key]) process.env[key] = value;
+    }
+  } catch {}
+}
+
+loadParentDotenv();
+
 function readJsonFile(filePath) {
   try {
     return JSON.parse(fs.readFileSync(filePath, "utf8"));
@@ -56,9 +80,39 @@ const NEXT_PUBLIC_AUTH_ENABLED = normalizeBoolean(
     "false",
   ),
 );
+const AUTH_PROVIDER = firstNonEmpty(process.env.AUTH_PROVIDER, "legacy").toLowerCase();
+const NEXT_PUBLIC_AUTH_PROVIDER = firstNonEmpty(
+  process.env.NEXT_PUBLIC_AUTH_PROVIDER,
+  AUTH_PROVIDER,
+);
+const NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY = firstNonEmpty(
+  process.env.NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY,
+);
+const NEXT_PUBLIC_CLERK_SIGN_IN_URL = firstNonEmpty(
+  process.env.NEXT_PUBLIC_CLERK_SIGN_IN_URL,
+  "/sign-in",
+);
+const NEXT_PUBLIC_CLERK_SIGN_UP_URL = firstNonEmpty(
+  process.env.NEXT_PUBLIC_CLERK_SIGN_UP_URL,
+  "/sign-up",
+);
+const NEXT_PUBLIC_CLERK_AFTER_SIGN_IN_URL = firstNonEmpty(
+  process.env.NEXT_PUBLIC_CLERK_AFTER_SIGN_IN_URL,
+  "/",
+);
+const NEXT_PUBLIC_CLERK_AFTER_SIGN_UP_URL = firstNonEmpty(
+  process.env.NEXT_PUBLIC_CLERK_AFTER_SIGN_UP_URL,
+  "/",
+);
 
 process.env.NEXT_PUBLIC_API_BASE = NEXT_PUBLIC_API_BASE;
 process.env.NEXT_PUBLIC_AUTH_ENABLED = NEXT_PUBLIC_AUTH_ENABLED;
+process.env.NEXT_PUBLIC_AUTH_PROVIDER = NEXT_PUBLIC_AUTH_PROVIDER;
+process.env.NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY = NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY;
+process.env.NEXT_PUBLIC_CLERK_SIGN_IN_URL = NEXT_PUBLIC_CLERK_SIGN_IN_URL;
+process.env.NEXT_PUBLIC_CLERK_SIGN_UP_URL = NEXT_PUBLIC_CLERK_SIGN_UP_URL;
+process.env.NEXT_PUBLIC_CLERK_AFTER_SIGN_IN_URL = NEXT_PUBLIC_CLERK_AFTER_SIGN_IN_URL;
+process.env.NEXT_PUBLIC_CLERK_AFTER_SIGN_UP_URL = NEXT_PUBLIC_CLERK_AFTER_SIGN_UP_URL;
 
 // Resolve the build-time application version from the single source of
 // truth at ``aimtutor/__version__.py``. The Python file is parsed with a
@@ -82,6 +136,12 @@ const nextConfig = {
     NEXT_PUBLIC_APP_VERSION: APP_VERSION,
     NEXT_PUBLIC_API_BASE,
     NEXT_PUBLIC_AUTH_ENABLED,
+    NEXT_PUBLIC_AUTH_PROVIDER,
+    NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY,
+    NEXT_PUBLIC_CLERK_SIGN_IN_URL,
+    NEXT_PUBLIC_CLERK_SIGN_UP_URL,
+    NEXT_PUBLIC_CLERK_AFTER_SIGN_IN_URL,
+    NEXT_PUBLIC_CLERK_AFTER_SIGN_UP_URL,
   },
 
   // Standalone output: self-contained server.js + minimal node_modules

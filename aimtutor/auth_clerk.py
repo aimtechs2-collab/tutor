@@ -8,7 +8,9 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from functools import lru_cache
+import json
 import os
+from pathlib import Path
 import time
 from typing import Any
 
@@ -18,7 +20,11 @@ from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from jose import JWTError, jwt
 
 CLERK_JWKS_URL = "https://api.clerk.com/v1/jwks"
-CLERK_ENABLED = bool(os.environ.get("CLERK_SECRET_KEY"))
+def _clerk_requested() -> bool:
+    return os.environ.get("AUTH_PROVIDER", "").strip().lower() == "clerk"
+
+
+CLERK_ENABLED = _clerk_requested() and bool(os.environ.get("CLERK_SECRET_KEY"))
 _JWKS_TTL_SECONDS = 300
 
 security = HTTPBearer(auto_error=False)
@@ -62,18 +68,94 @@ def _role_from_claims(claims: dict[str, Any]) -> str:
     return role if role in {"admin", "user"} else "user"
 
 
+def _email_from_claims(claims: dict[str, Any]) -> str:
+    return str(
+        claims.get("email")
+        or claims.get("primary_email_address")
+        or claims.get("username")
+        or ""
+    )
+
+
+def _registry_path() -> Path:
+    return Path("data") / "multi-user" / "_system" / "users.json"
+
+
+def _load_user_registry() -> dict[str, Any]:
+    path = _registry_path()
+    if not path.exists():
+        return {}
+    try:
+        loaded = json.loads(path.read_text(encoding="utf-8"))
+        return loaded if isinstance(loaded, dict) else {}
+    except Exception:
+        return {}
+
+
+def _save_user_registry(registry: dict[str, Any]) -> None:
+    path = _registry_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(registry, indent=2), encoding="utf-8")
+
+
+def _bootstrap_or_lookup_local_role(claims: dict[str, Any], claimed_role: str) -> str:
+    """Keep Clerk role usable before webhooks/JWT metadata are configured.
+
+    Production Clerk role still lives in ``publicMetadata.role``. This fallback
+    only prevents a fresh local AIMTutor install from locking its first signed-in
+    Clerk user out of model configuration before the webhook/JWT template exists.
+    """
+    user_id = str(claims.get("sub") or claims.get("userId") or claims.get("user_id") or "")
+    if not user_id:
+        return claimed_role
+
+    registry = _load_user_registry()
+    has_active_admin = any(
+        isinstance(item, dict)
+        and item.get("status", "active") == "active"
+        and item.get("role") == "admin"
+        for item in registry.values()
+    )
+    existing = registry.get(user_id)
+    if isinstance(existing, dict):
+        role = str(existing.get("role") or claimed_role)
+        if (claimed_role == "admin" or not has_active_admin) and role != "admin":
+            existing["role"] = "admin"
+            _save_user_registry(registry)
+            return "admin"
+        return role if role in {"admin", "user"} else claimed_role
+
+    active_users = [
+        item
+        for item in registry.values()
+        if isinstance(item, dict) and item.get("status", "active") == "active"
+    ]
+    role = "admin" if len(active_users) == 0 else claimed_role
+    registry[user_id] = {
+        "workspace_dir": f"multi-user/{user_id}",
+        "email": _email_from_claims(claims),
+        "name": str(claims.get("name") or _email_from_claims(claims) or user_id),
+        "role": role,
+        "created_at": int(time.time()),
+        "last_active": int(time.time()),
+        "status": "active",
+    }
+    _save_user_registry(registry)
+    return role
+
+
 def clerk_token_payload(claims: dict[str, Any]):
     from aimtutor.services.auth import TokenPayload
 
     user_id = str(claims.get("sub") or claims.get("userId") or claims.get("user_id") or "")
     username = str(
-        claims.get("email")
-        or claims.get("primary_email_address")
-        or claims.get("username")
+        _email_from_claims(claims)
         or user_id
         or "clerk-user"
     )
-    return TokenPayload(username=username, role=_role_from_claims(claims), user_id=user_id)
+    claimed_role = _role_from_claims(claims)
+    role = _bootstrap_or_lookup_local_role(claims, claimed_role)
+    return TokenPayload(username=username, role=role, user_id=user_id)
 
 
 async def verify_clerk_token(token: str) -> dict[str, Any]:
@@ -120,7 +202,7 @@ async def require_clerk_user(
 
 
 def is_admin(claims: dict[str, Any]) -> bool:
-    return _role_from_claims(claims) == "admin"
+    return _bootstrap_or_lookup_local_role(claims, _role_from_claims(claims)) == "admin"
 
 
 async def require_admin(claims: dict[str, Any] = Depends(require_clerk_user)) -> dict[str, Any]:
@@ -131,4 +213,4 @@ async def require_admin(claims: dict[str, Any] = Depends(require_clerk_user)) ->
 
 @lru_cache(maxsize=1)
 def clerk_is_enabled() -> bool:
-    return bool(os.environ.get("CLERK_SECRET_KEY"))
+    return _clerk_requested() and bool(os.environ.get("CLERK_SECRET_KEY"))

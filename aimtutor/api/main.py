@@ -1,6 +1,8 @@
 from contextlib import asynccontextmanager
 import logging
+from pathlib import Path
 
+from dotenv import load_dotenv
 from fastapi import Depends, FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
@@ -14,8 +16,9 @@ from aimtutor.services.config import (
 )
 from aimtutor.services.path_service import get_path_service
 
+load_dotenv(Path(__file__).resolve().parents[2] / ".env", override=False)
 ensure_runtime_settings_files()
-export_runtime_settings_to_env(overwrite=True)
+export_runtime_settings_to_env(overwrite=False)
 configure_logging()
 logger = logging.getLogger(__name__)
 

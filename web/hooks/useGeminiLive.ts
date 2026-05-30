@@ -13,7 +13,7 @@
  */
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { wsUrl, apiFetch } from "@/lib/api";
+import { wsUrl, apiFetch, apiUrl } from "@/lib/api";
 
 // ── types ──────────────────────────────────────────────────────────────────
 
@@ -61,7 +61,7 @@ function base64ToArrayBuffer(b64: string): ArrayBuffer {
   return buf.buffer;
 }
 
-function arrayBufferToBase64(buf: ArrayBuffer): string {
+function arrayBufferToBase64(buf: ArrayBufferLike): string {
   const bytes = new Uint8Array(buf);
   let bin = "";
   for (let i = 0; i < bytes.byteLength; i++) bin += String.fromCharCode(bytes[i]);
@@ -294,10 +294,10 @@ export function useGeminiLive(): GeminiLiveHook {
         tokenRefreshTimerRef.current = setTimeout(async () => {
           if (stopRequestedRef.current) return;
           try {
-            const res = await apiFetch("/api/v1/gemini-live/token", {
+            const res = await apiFetch(apiUrl("/api/v1/gemini-live/token"), {
               method: "POST",
               headers: { "Content-Type": "application/json" },
-              body: JSON.stringify({ model: "gemini-2.0-flash-live" }),
+              body: JSON.stringify({ model: "gemini-2.5-flash-native-audio-latest" }),
             });
             const data = await res.json();
             cleanup();
@@ -329,7 +329,7 @@ export function useGeminiLive(): GeminiLiveHook {
 
       try {
         // 1. Check feature enabled
-        const cfgRes = await apiFetch("/api/v1/gemini-live/config");
+        const cfgRes = await apiFetch(apiUrl("/api/v1/gemini-live/config"));
         const cfgData = await cfgRes.json();
         if (!cfgData.enabled) {
           setError("Gemini Live is not configured. Add GEMINI_API_KEY in Settings.");
@@ -338,13 +338,13 @@ export function useGeminiLive(): GeminiLiveHook {
         }
 
         // 2. Get ephemeral token
-        const tokenRes = await apiFetch("/api/v1/gemini-live/token", {
+        const tokenRes = await apiFetch(apiUrl("/api/v1/gemini-live/token"), {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
             model: cfg.voice
-              ? cfgData.models?.[0]?.id ?? "gemini-2.0-flash-live"
-              : "gemini-2.0-flash-live",
+              ? cfgData.models?.[0]?.id ?? "gemini-2.5-flash-native-audio-latest"
+              : "gemini-2.5-flash-native-audio-latest",
             voice: cfg.voice ?? "Aoede",
             enable_affective_dialog: cfg.enableAffectiveDialog ?? false,
           }),

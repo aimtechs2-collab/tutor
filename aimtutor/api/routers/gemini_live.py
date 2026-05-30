@@ -22,12 +22,15 @@ import hashlib
 import json
 import logging
 import os
+import secrets
 import time
 from contextlib import suppress
+from pathlib import Path
 from typing import Any
 
 import httpx
 from fastapi import APIRouter, Depends, HTTPException, Query, WebSocket, WebSocketDisconnect
+from dotenv import load_dotenv
 from pydantic import BaseModel
 
 from aimtutor.api.routers.auth import require_auth, ws_auth_failed, ws_require_auth
@@ -40,8 +43,16 @@ router = APIRouter()
 # ── constants ─────────────────────────────────────────────────────────────
 
 LIVE_MODELS = [
-    {"id": "gemini-2.0-flash-live", "display_name": "Gemini 2.0 Flash Live", "affective_dialog": False},
-    {"id": "gemini-2.5-flash-live-preview", "display_name": "Gemini 2.5 Flash Live (Preview)", "affective_dialog": True},
+    {
+        "id": "gemini-2.5-flash-native-audio-latest",
+        "display_name": "Gemini 2.5 Flash Native Audio",
+        "affective_dialog": False,
+    },
+    {
+        "id": "gemini-2.5-flash-native-audio-preview-09-2025",
+        "display_name": "Gemini 2.5 Flash Native Audio Preview",
+        "affective_dialog": False,
+    },
 ]
 LIVE_VOICES = ["Aoede", "Puck", "Charon", "Kore", "Fenrir"]
 
@@ -57,9 +68,16 @@ _token_registry: dict[str, dict[str, Any]] = {}
 _active_sessions: dict[str, int] = {}
 
 TOKEN_TTL = 300  # seconds
+MODEL_CACHE_TTL = 600
+_model_cache: dict[str, Any] | None = None
+
+
+def _project_root() -> Path:
+    return Path(__file__).resolve().parents[3]
 
 
 def _get_api_key() -> str | None:
+    load_dotenv(_project_root() / ".env", override=False)
     return os.environ.get("GEMINI_API_KEY") or os.environ.get("GOOGLE_API_KEY")
 
 
@@ -68,6 +86,52 @@ def _clean_expired_tokens() -> None:
     expired = [k for k, v in _token_registry.items() if now - v["ts"] > TOKEN_TTL]
     for k in expired:
         del _token_registry[k]
+
+
+def _display_name(model_id: str) -> str:
+    return model_id.replace("-", " ").replace("_", " ").title()
+
+
+async def _live_models() -> list[dict[str, Any]]:
+    """Return Gemini models that currently support the Live WebSocket method."""
+    global _model_cache
+    now = time.time()
+    if _model_cache and now - float(_model_cache["ts"]) < MODEL_CACHE_TTL:
+        return list(_model_cache["models"])
+
+    api_key = _get_api_key()
+    if not api_key:
+        return LIVE_MODELS
+
+    try:
+        async with httpx.AsyncClient(timeout=10) as client:
+            resp = await client.get(
+                "https://generativelanguage.googleapis.com/v1beta/models",
+                params={"key": api_key},
+            )
+        resp.raise_for_status()
+        models: list[dict[str, Any]] = []
+        for item in resp.json().get("models", []):
+            methods = item.get("supportedGenerationMethods") or []
+            name = str(item.get("name") or "")
+            if "bidiGenerateContent" not in methods or not name.startswith("models/"):
+                continue
+            model_id = name.split("/", 1)[1]
+            models.append(
+                {
+                    "id": model_id,
+                    "display_name": item.get("displayName") or _display_name(model_id),
+                    "affective_dialog": "affective" in model_id,
+                }
+            )
+        if models:
+            models.sort(key=lambda m: (0 if m["id"].endswith("-latest") else 1, m["id"]))
+            _model_cache = {"ts": now, "models": models}
+            return models
+    except Exception as exc:
+        logger.warning("Failed to refresh Gemini Live model list: %s", exc)
+
+    return LIVE_MODELS
 
 
 # ── rate limiter ──────────────────────────────────────────────────────────
@@ -90,7 +154,7 @@ def _rate_check(key: str, max_calls: int = 10, window: float = 60.0) -> bool:
 # ── models ────────────────────────────────────────────────────────────────
 
 class TokenRequest(BaseModel):
-    model: str = "gemini-2.0-flash-live"
+    model: str = "gemini-2.5-flash-native-audio-latest"
     voice: str = "Aoede"
     enable_affective_dialog: bool = False
 
@@ -104,7 +168,7 @@ async def get_config() -> dict[str, Any]:
     return {
         "enabled": bool(api_key),
         "requires_https": True,
-        "models": LIVE_MODELS,
+        "models": await _live_models(),
         "voices": LIVE_VOICES,
     }
 
@@ -128,36 +192,15 @@ async def create_token(
     if not _rate_check(user_id):
         raise HTTPException(429, "Too many token requests. Please wait a moment.")
 
-    if body.model not in {m["id"] for m in LIVE_MODELS}:
+    live_models = await _live_models()
+    if body.model not in {m["id"] for m in live_models}:
         raise HTTPException(400, f"Unsupported model: {body.model}")
 
-    # Request ephemeral token from Google
-    try:
-        async with httpx.AsyncClient(timeout=15) as client:
-            resp = await client.post(
-                "https://generativelanguage.googleapis.com/v1beta/models/"
-                f"{body.model}:generateContent",
-                headers={
-                    "x-goog-api-key": api_key,
-                    "Content-Type": "application/json",
-                },
-                json={
-                    "ephemeral_token_request": {
-                        "expire_time": "300s",
-                        "new_session_expire_time": "3600s",
-                    }
-                },
-            )
-        if resp.status_code != 200:
-            logger.error("Gemini ephemeral token request failed: %s %s", resp.status_code, resp.text[:200])
-            raise HTTPException(502, "Failed to get ephemeral token from Gemini API.")
-        data = resp.json()
-        token = data.get("ephemeral_token") or data.get("token")
-        if not token:
-            raise HTTPException(502, "Gemini API returned no token.")
-    except httpx.RequestError as exc:
-        logger.error("Gemini token request network error: %s", exc)
-        raise HTTPException(502, "Network error reaching Gemini API.")
+    # Browser audio is proxied through this FastAPI route, so the browser never
+    # connects to Google and never needs a Google ephemeral token. Issue a
+    # short-lived AIMTutor session token and keep the real Gemini API key on the
+    # server for the upstream WebSocket connection.
+    token = secrets.token_urlsafe(32)
 
     expires_at = time.time() + TOKEN_TTL
     token_hash = hashlib.sha256(token.encode()).hexdigest()
@@ -237,18 +280,15 @@ async def voice_session(
 
         # Session config for Gemini Live
         live_config: dict[str, Any] = {
-            "response_modalities": ["AUDIO", "TEXT"],
-            "system_instruction": {"parts": [{"text": system_instruction}]},
-            "speech_config": {
-                "voice_config": {
-                    "prebuilt_voice_config": {"voice_name": voice}
+            "responseModalities": ["AUDIO"],
+            "speechConfig": {
+                "voiceConfig": {
+                    "prebuiltVoiceConfig": {"voiceName": voice}
                 }
             },
         }
-        if tools:
-            live_config["tools"] = tools
-        if affective and model == "gemini-2.5-flash-live-preview":
-            live_config["enable_affective_dialog"] = True
+        if affective and "native-audio" in model:
+            live_config["enableAffectiveDialog"] = True
 
         api_key = _get_api_key()
         if not api_key:
@@ -332,10 +372,6 @@ async def _run_session(
         f"GenerativeService.BidiGenerateContent?key={api_key}"
     )
 
-    async with httpx.AsyncClient() as client:
-        async with client.stream("GET", wss_url, headers={}) as _:
-            pass  # Placeholder — see below for real implementation
-
     # Use websockets library for the upstream connection
     try:
         import websockets  # type: ignore
@@ -343,12 +379,16 @@ async def _run_session(
         await ws.send_json({"type": "error", "message": "websockets package required"})
         return
 
-    setup_msg = json.dumps({
+    setup_payload: dict[str, Any] = {
         "setup": {
             "model": f"models/{model}",
-            "generation_config": live_config,
+            "generationConfig": live_config,
+            "systemInstruction": {"parts": [{"text": system_instruction}]},
         }
-    })
+    }
+    if tools:
+        setup_payload["setup"]["tools"] = tools
+    setup_msg = json.dumps(setup_payload)
 
     async with websockets.connect(wss_url) as gemini_ws:
         # Send setup
@@ -363,9 +403,9 @@ async def _run_session(
         # Proactive greeting
         if proactive_prompt:
             await gemini_ws.send(json.dumps({
-                "client_content": {
+                "clientContent": {
                     "turns": [{"role": "user", "parts": [{"text": proactive_prompt}]}],
-                    "turn_complete": True,
+                    "turnComplete": True,
                 }
             }))
 
@@ -395,26 +435,26 @@ async def _run_session(
                     chunk_bytes = len(base64.b64decode(pcm_b64))
                     user_audio_secs_ref[0] += chunk_bytes / 2 / 16000
                     await gemini_ws.send(json.dumps({
-                        "realtime_input": {
-                            "media_chunks": [{"mime_type": "audio/pcm", "data": pcm_b64}]
+                        "realtimeInput": {
+                            "mediaChunks": [{"mimeType": "audio/pcm;rate=16000", "data": pcm_b64}]
                         }
                     }))
                 elif t == "text":
                     await gemini_ws.send(json.dumps({
-                        "client_content": {
+                        "clientContent": {
                             "turns": [{"role": "user", "parts": [{"text": msg.get("content", "")}]}],
-                            "turn_complete": True,
+                            "turnComplete": True,
                         }
                     }))
                 elif t == "interrupt":
                     # Signal Gemini to stop generating
-                    await gemini_ws.send(json.dumps({"client_content": {"turn_complete": False}}))
+                    await gemini_ws.send(json.dumps({"clientContent": {"turnComplete": False}}))
                 elif t == "end_turn":
                     return
                 elif t == "video_frame" and enable_video:
                     await gemini_ws.send(json.dumps({
-                        "realtime_input": {
-                            "media_chunks": [{"mime_type": "image/jpeg", "data": msg["data"]}]
+                        "realtimeInput": {
+                            "mediaChunks": [{"mimeType": "image/jpeg", "data": msg["data"]}]
                         }
                     }))
                 elif t == "pong":
@@ -463,7 +503,7 @@ async def _run_session(
                             "response": {"output": result},
                         })
                     await gemini_ws.send(json.dumps({
-                        "tool_response": {"function_responses": tool_responses}
+                        "toolResponse": {"functionResponses": tool_responses}
                     }))
 
                 # Input transcription
