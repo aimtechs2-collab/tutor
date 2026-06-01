@@ -18,6 +18,7 @@ import { AudioPlayer } from "@/lib/gemini/AudioPlayer";
 import { AudioStreamer } from "@/lib/gemini/AudioStreamer";
 import { GeminiLiveClient } from "@/lib/gemini/GeminiLiveClient";
 import { VideoStreamer, type VideoSource } from "@/lib/gemini/VideoStreamer";
+import { executeTutorCall } from "@/lib/gemini/tutor-guidance";
 
 export type VoiceStatus =
   | "idle"
@@ -38,6 +39,12 @@ export interface GeminiLiveConfig {
   sessionId?: string;
   kbName?: string;
   proactivePrompt?: string;
+  /**
+   * Opt into ScreenPipe screen-activity context for this session. When
+   * undefined, the server-side integration toggle (exposed via /config as
+   * `screenpipe_enabled`) decides. Pass `false` to explicitly opt out.
+   */
+  screenpipe?: boolean;
 }
 
 export interface GeminiLiveHook {
@@ -116,6 +123,9 @@ export function useGeminiLive(): GeminiLiveHook {
   const connectInFlightRef = useRef(false);
   const liveGreetSentRef = useRef(false);
   const videoSourceRef = useRef<VideoSource | null>(null);
+  // Resolved once per session in startSession() (client opt-in OR server
+  // toggle). Held in a ref so reconnects reuse it without re-probing /config.
+  const screenpipeRef = useRef<boolean | undefined>(undefined);
 
   const isSupported = useMemo(() => {
     if (typeof window === "undefined") return false;
@@ -209,6 +219,7 @@ export function useGeminiLive(): GeminiLiveHook {
             voice,
             session_id: cfg.sessionId,
             recent_context: buildRecentContext(transcriptRef.current),
+            screenpipe: screenpipeRef.current,
           }),
         });
 
@@ -262,6 +273,16 @@ export function useGeminiLive(): GeminiLiveHook {
           onOutputTranscript: (text) => addTranscript("model", text),
           onResumptionUpdate: (u) => {
             if (u.newHandle) resumptionHandleRef.current = u.newHandle;
+          },
+          onToolCall: async (calls) => {
+            // Run sequentially so an in-batch navigate_to settles (route mounts)
+            // before a following highlight_element/click_element resolves its
+            // target. Parallel execution raced and made guidance feel broken.
+            const results = [];
+            for (const call of calls) {
+              results.push(await executeTutorCall(call));
+            }
+            return results;
           },
           onGoAway: () => {
             if (!stopRequestedRef.current && reconnectAttemptsRef.current < MAX_RECONNECT) {
@@ -317,6 +338,9 @@ export function useGeminiLive(): GeminiLiveHook {
       stopRequestedRef.current = false;
       reconnectAttemptsRef.current = 0;
       liveGreetSentRef.current = false;
+      // Explicit client opt-in/out wins; otherwise fall back to the server
+      // toggle resolved from /config below.
+      screenpipeRef.current = cfg.screenpipe;
 
       if (!window.isSecureContext) {
         setError("Live Voice requires HTTPS.");
@@ -335,6 +359,9 @@ export function useGeminiLive(): GeminiLiveHook {
           setError("Gemini Live is not configured. Add GEMINI_API_KEY in Settings.");
           setStatus("error");
           return;
+        }
+        if (screenpipeRef.current === undefined) {
+          screenpipeRef.current = Boolean(cfgData.screenpipe_enabled);
         }
 
         await connectLive(cfg, true);

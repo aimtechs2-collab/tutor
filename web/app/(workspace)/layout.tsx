@@ -1,5 +1,6 @@
 import WorkspaceSidebar from "@/components/sidebar/WorkspaceSidebar";
 import { NotificationBell } from "@/components/NotificationBell";
+import TutorGuidanceOverlay from "@/components/gemini-live/TutorGuidanceOverlay";
 import { UnifiedChatProvider } from "@/context/UnifiedChatContext";
 
 export default function WorkspaceLayout({
@@ -20,6 +21,8 @@ export default function WorkspaceLayout({
           {children}
         </main>
       </div>
+      {/* Lets the live voice tutor spotlight/navigate the app via function calls. */}
+      <TutorGuidanceOverlay />
     </UnifiedChatProvider>
   );
 }

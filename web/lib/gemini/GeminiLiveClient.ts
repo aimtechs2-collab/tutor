@@ -6,6 +6,18 @@
 const WS_BASE =
   "wss://generativelanguage.googleapis.com/ws/google.ai.generativelanguage.v1alpha.GenerativeService.BidiGenerateContentConstrained";
 
+export interface LiveFunctionCall {
+  id?: string;
+  name: string;
+  args?: Record<string, unknown>;
+}
+
+export interface LiveFunctionResponse {
+  id?: string;
+  name: string;
+  response: Record<string, unknown>;
+}
+
 export interface GeminiCallbacks {
   onReady?: () => void;
   onAudioChunk?: (b64: string) => void;
@@ -17,6 +29,10 @@ export interface GeminiCallbacks {
   onClose?: (info: { code: number; reason: string }) => void;
   onGoAway?: (info: { timeLeft?: string }) => void;
   onResumptionUpdate?: (info: { newHandle?: string; resumable?: boolean }) => void;
+  /** Resolve incoming function calls (in-app guidance) into responses. */
+  onToolCall?: (
+    calls: LiveFunctionCall[],
+  ) => Promise<LiveFunctionResponse[]> | LiveFunctionResponse[];
 }
 
 interface ServerPart {
@@ -37,11 +53,24 @@ interface ServerContent {
   output_transcription?: { text?: string };
 }
 
+interface ServerFunctionCall {
+  id?: string;
+  name?: string;
+  args?: Record<string, unknown>;
+}
+
+interface ServerToolCall {
+  functionCalls?: ServerFunctionCall[];
+  function_calls?: ServerFunctionCall[];
+}
+
 interface ServerMessage {
   setupComplete?: unknown;
   setup_complete?: unknown;
   serverContent?: ServerContent;
   server_content?: ServerContent;
+  toolCall?: ServerToolCall;
+  tool_call?: ServerToolCall;
   error?: { code?: number; message?: string };
   goAway?: { timeLeft?: string; time_left?: string };
   go_away?: { timeLeft?: string; time_left?: string };
@@ -170,6 +199,11 @@ export class GeminiLiveClient {
           });
         }
 
+        const toolCall = msg.toolCall ?? msg.tool_call;
+        if (toolCall) {
+          await this._handleToolCall(toolCall);
+        }
+
         const sc = msg.serverContent ?? msg.server_content;
         if (sc) {
           if (sc.interrupted) {
@@ -224,6 +258,36 @@ export class GeminiLiveClient {
       }
       this.callbacks.onClose?.({ code: ev.code, reason: ev.reason || "" });
     };
+  }
+
+  private async _handleToolCall(toolCall: ServerToolCall): Promise<void> {
+    const raw = toolCall.functionCalls ?? toolCall.function_calls ?? [];
+    const calls: LiveFunctionCall[] = raw
+      .filter((c) => !!c?.name)
+      .map((c) => ({ id: c.id, name: c.name as string, args: c.args ?? {} }));
+    if (calls.length === 0) return;
+
+    let responses: LiveFunctionResponse[] = [];
+    try {
+      responses = (await this.callbacks.onToolCall?.(calls)) ?? [];
+    } catch {
+      responses = calls.map((c) => ({
+        id: c.id,
+        name: c.name,
+        response: { ok: false, error: "Tool handler failed." },
+      }));
+    }
+    if (responses.length === 0) return;
+
+    this._send({
+      toolResponse: {
+        functionResponses: responses.map((r) => ({
+          ...(r.id ? { id: r.id } : {}),
+          name: r.name,
+          response: r.response,
+        })),
+      },
+    });
   }
 
   sendAudio(b64: string): void {
