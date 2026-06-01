@@ -5,6 +5,7 @@ import {
   BookMarked,
   Brain,
   Database,
+  MonitorPlay,
   Palette,
   Plug,
   Search,
@@ -18,6 +19,7 @@ export type SettingsItemKey =
   | "status"
   | "tools"
   | "mcp"
+  | "screenpipe"
   | "llm"
   | "embedding"
   | "search"
@@ -88,6 +90,13 @@ export const SETTINGS_ITEMS: SettingsItem[] = [
     label: "MCP servers",
     description: "External MCP servers (coming soon).",
     icon: Plug,
+  },
+  {
+    key: "screenpipe",
+    href: "/settings/screenpipe",
+    label: "ScreenPipe",
+    description: "Feed recent on-screen context to the live voice tutor.",
+    icon: MonitorPlay,
   },
   {
     key: "tools",

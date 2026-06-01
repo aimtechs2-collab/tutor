@@ -37,6 +37,20 @@ DEFAULT_INTEGRATIONS_SETTINGS: dict[str, Any] = {
     "pocketbase_external_url": "",
     "pocketbase_admin_email": "",
     "pocketbase_admin_password": "",
+    # ScreenPipe (optional): when enabled, the Gemini Live tutor pulls recent
+    # on-screen text from a locally running ScreenPipe instance and bakes it
+    # into the ephemeral-token system instruction. Default OFF for privacy.
+    "screenpipe_enabled": False,
+    "screenpipe_url": "http://localhost:3030",
+    # Optional bearer key — newer ScreenPipe builds reject /search without it.
+    "screenpipe_api_key": "",
+    # How far back to pull recent activity, and whether to include audio
+    # transcriptions in addition to screen text.
+    "screenpipe_window_minutes": 10,
+    "screenpipe_include_audio": False,
+    # Privacy denylist: rows whose app name or window title contain any of
+    # these (case-insensitive substring) are dropped before reaching the model.
+    "screenpipe_exclude": [],
 }
 
 IGNORE_PROCESS_OVERRIDES_ENV = "AIMTUTOR_IGNORE_PROCESS_ENV_OVERRIDES"
@@ -80,6 +94,22 @@ def _coerce_origins(value: Any) -> list[str]:
             origins.append(origin)
             seen.add(origin)
     return origins
+
+
+def _coerce_str_list(value: Any) -> list[str]:
+    """Normalize a comma/newline-delimited string or list into a deduped list."""
+    if isinstance(value, list):
+        raw_items = value
+    else:
+        raw_items = str(value or "").replace("\n", ",").split(",")
+    items: list[str] = []
+    seen: set[str] = set()
+    for raw in raw_items:
+        item = str(raw).strip()
+        if item and item not in seen:
+            items.append(item)
+            seen.add(item)
+    return items
 
 
 def _deepcopy_default(defaults: dict[str, Any]) -> dict[str, Any]:
@@ -230,6 +260,8 @@ class RuntimeSettingsService:
             "POCKETBASE_EXTERNAL_URL": integrations["pocketbase_external_url"],
             "POCKETBASE_ADMIN_EMAIL": integrations["pocketbase_admin_email"],
             "POCKETBASE_ADMIN_PASSWORD": integrations["pocketbase_admin_password"],
+            "SCREENPIPE_ENABLED": _bool_env(integrations["screenpipe_enabled"]),
+            "SCREENPIPE_URL": integrations["screenpipe_url"],
         }
 
     def export_environment(self, *, overwrite: bool = True) -> dict[str, str]:
@@ -327,6 +359,10 @@ class RuntimeSettingsService:
             payload["pocketbase_admin_email"] = value
         if value := self._process_env_value("POCKETBASE_ADMIN_PASSWORD"):
             payload["pocketbase_admin_password"] = value
+        if value := self._process_env_value("SCREENPIPE_ENABLED"):
+            payload["screenpipe_enabled"] = value
+        if value := self._process_env_value("SCREENPIPE_URL"):
+            payload["screenpipe_url"] = value
         return self._normalize_integrations(payload)
 
     def _normalize_system(self, settings: dict[str, Any]) -> dict[str, Any]:
@@ -353,6 +389,7 @@ class RuntimeSettingsService:
         }
 
     def _normalize_integrations(self, settings: dict[str, Any]) -> dict[str, Any]:
+        screenpipe_url = _string(settings.get("screenpipe_url")).rstrip("/")
         return {
             "version": 1,
             "pocketbase_url": _string(settings.get("pocketbase_url")).rstrip("/"),
@@ -360,6 +397,16 @@ class RuntimeSettingsService:
             "pocketbase_external_url": _string(settings.get("pocketbase_external_url")).rstrip("/"),
             "pocketbase_admin_email": _string(settings.get("pocketbase_admin_email")),
             "pocketbase_admin_password": _string(settings.get("pocketbase_admin_password")),
+            "screenpipe_enabled": _coerce_bool(settings.get("screenpipe_enabled"), False),
+            "screenpipe_url": screenpipe_url or "http://localhost:3030",
+            "screenpipe_api_key": _string(settings.get("screenpipe_api_key")),
+            "screenpipe_window_minutes": max(
+                1, min(_coerce_int(settings.get("screenpipe_window_minutes"), 10), 120)
+            ),
+            "screenpipe_include_audio": _coerce_bool(
+                settings.get("screenpipe_include_audio"), False
+            ),
+            "screenpipe_exclude": _coerce_str_list(settings.get("screenpipe_exclude")),
         }
 
 

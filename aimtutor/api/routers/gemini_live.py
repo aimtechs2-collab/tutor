@@ -35,6 +35,126 @@ DEFAULT_LIVE_MODEL = "gemini-3.1-flash-live-preview"
 LIVE_VOICES = ["Aoede", "Puck", "Charon", "Kore", "Fenrir"]
 LIVE_SESSION_MINUTES = 10
 
+# --- In-app guidance (Gemini Live function calling) ----------------------------
+# The live tutor can drive the AIMTutor web app: navigate pages, spotlight a
+# control, or click a whitelisted control. These enums MUST stay in sync with
+# web/lib/gemini/tutor-guidance.ts (TUTOR_PAGES / TUTOR_TARGETS). The browser
+# executes the calls and replies; nothing here touches the OS.
+TUTOR_NAV_PAGES = [
+    "chat",
+    "history",
+    "knowledge",
+    "notebook",
+    "question",
+    "solver",
+    "research",
+    "co_writer",
+    "settings",
+]
+TUTOR_UI_TARGETS = [
+    "composer.input",
+    "composer.send",
+    "composer.attach",
+    "composer.capabilities",
+    "composer.knowledge",
+    "composer.space",
+    "composer.voice",
+]
+
+TUTOR_UI_FUNCTION_DECLARATIONS = [
+    {
+        "name": "navigate_to",
+        "description": (
+            "Open a page of the AIMTutor app on the student's screen so they can "
+            "follow along while you explain. Use this when guiding the student to "
+            "a feature."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "page": {
+                    "type": "string",
+                    "enum": TUTOR_NAV_PAGES,
+                    "description": "Which app page to open.",
+                }
+            },
+            "required": ["page"],
+        },
+    },
+    {
+        "name": "highlight_element",
+        "description": (
+            "Spotlight a control on the student's screen and point to it while you "
+            "describe what it does. Prefer this over clicking so the student stays "
+            "in control."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "target": {
+                    "type": "string",
+                    "enum": TUTOR_UI_TARGETS,
+                    "description": "Which control to spotlight.",
+                },
+                "note": {
+                    "type": "string",
+                    "description": "A short caption (≤6 words) shown beside the spotlight.",
+                },
+            },
+            "required": ["target"],
+        },
+    },
+    {
+        "name": "click_element",
+        "description": (
+            "Click a control for the student (e.g. open a menu) when they ask you "
+            "to do it for them. Use sparingly; highlighting is usually better."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "target": {
+                    "type": "string",
+                    "enum": TUTOR_UI_TARGETS,
+                    "description": "Which control to click.",
+                }
+            },
+            "required": ["target"],
+        },
+    },
+    {
+        "name": "clear_guidance",
+        "description": "Remove any on-screen spotlight or pointer you previously showed.",
+        "parameters": {"type": "object", "properties": {}},
+    },
+]
+
+# Declared only when ScreenPipe is enabled. Lets the tutor read the student's
+# CURRENT screen on demand mid-conversation (ScreenPipe full-text search),
+# which the start-of-session token snapshot cannot do.
+LOOK_AT_SCREEN_DECLARATION = {
+    "name": "look_at_screen",
+    "description": (
+        "Read what is on the student's screen right now using ScreenPipe (their "
+        "local screen recorder). Call this when the student asks about what they "
+        "are looking at, references something on their screen, or when you need "
+        "fresh on-screen context during the conversation. Returns recent on-screen "
+        "text; may be empty if ScreenPipe has nothing recent."
+    ),
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "query": {
+                "type": "string",
+                "description": (
+                    "Optional keywords to look for on screen (e.g. an error "
+                    "message or heading). Omit for a general recent snapshot."
+                ),
+            }
+        },
+    },
+}
+
 _rate_buckets: dict[str, list[float]] = {}
 
 
@@ -68,6 +188,37 @@ def _live_model_catalog() -> list[dict[str, Any]]:
     return [{"id": mid, "display_name": _display_name(mid), "affective_dialog": False}]
 
 
+def _screenpipe_settings() -> dict[str, Any]:
+    """Read the ScreenPipe integration toggle + URL from runtime settings.
+
+    Fully defensive: any failure resolves to a disabled default so the live
+    voice flow is never affected by a settings read error.
+    """
+    try:
+        from aimtutor.services.config.runtime_settings import load_integrations_settings
+
+        integrations = load_integrations_settings()
+        exclude = integrations.get("screenpipe_exclude") or []
+        return {
+            "enabled": bool(integrations.get("screenpipe_enabled", False)),
+            "url": str(integrations.get("screenpipe_url") or "http://localhost:3030"),
+            "api_key": str(integrations.get("screenpipe_api_key") or ""),
+            "window_minutes": int(integrations.get("screenpipe_window_minutes") or 10),
+            "include_audio": bool(integrations.get("screenpipe_include_audio", False)),
+            "exclude": list(exclude) if isinstance(exclude, list) else [],
+        }
+    except Exception as exc:
+        logger.debug("gemini_live: failed to read screenpipe settings (%s)", exc)
+        return {
+            "enabled": False,
+            "url": "http://localhost:3030",
+            "api_key": "",
+            "window_minutes": 10,
+            "include_audio": False,
+            "exclude": [],
+        }
+
+
 def _rate_check(key: str, max_calls: int = 10, window: float = 60.0) -> bool:
     now = time.monotonic()
     bucket = [t for t in _rate_buckets.get(key, []) if now - t < window]
@@ -83,6 +234,10 @@ class TokenRequest(BaseModel):
     voice: str = "Aoede"
     session_id: str | None = None
     recent_context: str | None = None
+    # ScreenPipe opt-in for this session. ``None`` means "follow the server
+    # setting" (the integrations toggle is the master switch); ``False`` lets a
+    # client explicitly opt out even when the server setting is enabled.
+    screenpipe: bool | None = None
 
 
 class LiveTranscriptTurn(BaseModel):
@@ -116,7 +271,133 @@ async def get_config() -> dict[str, Any]:
         "models": _live_model_catalog(),
         "default_model": pinned,
         "voices": LIVE_VOICES,
+        "screenpipe_enabled": _screenpipe_settings()["enabled"],
     }
+
+
+class ScreenPipeSettingsUpdate(BaseModel):
+    enabled: bool | None = None
+    url: str | None = None
+    # Write-only: blank string clears the saved key; ``None`` leaves it intact.
+    api_key: str | None = None
+    window_minutes: int | None = None
+    include_audio: bool | None = None
+    exclude: list[str] | None = None
+
+
+def _public_screenpipe_settings() -> dict[str, Any]:
+    """ScreenPipe settings with the API key redacted to a boolean flag."""
+    s = _screenpipe_settings()
+    return {
+        "enabled": s["enabled"],
+        "url": s["url"],
+        "api_key_set": bool(s.get("api_key")),
+        "window_minutes": s["window_minutes"],
+        "include_audio": s["include_audio"],
+        "exclude": s["exclude"],
+    }
+
+
+def _require_screenpipe_admin() -> None:
+    """Integrations settings are global; only admins may change them.
+
+    In single-user deployments ``is_admin`` is always true, so this is a no-op
+    there and only meaningfully gates shared multi-user backends.
+    """
+    try:
+        from aimtutor.multi_user.context import get_current_user
+
+        if not get_current_user().is_admin:
+            raise HTTPException(403, "ScreenPipe settings are managed by an administrator.")
+    except HTTPException:
+        raise
+    except Exception:
+        # No multi-user context (e.g. SDK/CLI) → treat as permitted.
+        return
+
+
+@router.get("/screenpipe/settings")
+async def get_screenpipe_settings(payload=Depends(require_auth)) -> dict[str, Any]:
+    """Return the current ScreenPipe settings (API key redacted)."""
+    return _public_screenpipe_settings()
+
+
+@router.put("/screenpipe/settings")
+async def update_screenpipe_settings(
+    body: ScreenPipeSettingsUpdate,
+    payload=Depends(require_auth),
+) -> dict[str, Any]:
+    """Persist ScreenPipe settings to runtime settings (admin only)."""
+    _require_screenpipe_admin()
+    from aimtutor.services.config.runtime_settings import (
+        get_runtime_settings_service,
+    )
+
+    service = get_runtime_settings_service()
+    current = service.load_integrations()
+    if body.enabled is not None:
+        current["screenpipe_enabled"] = bool(body.enabled)
+    if body.url is not None:
+        current["screenpipe_url"] = body.url
+    if body.api_key is not None:
+        current["screenpipe_api_key"] = body.api_key
+    if body.window_minutes is not None:
+        current["screenpipe_window_minutes"] = body.window_minutes
+    if body.include_audio is not None:
+        current["screenpipe_include_audio"] = bool(body.include_audio)
+    if body.exclude is not None:
+        current["screenpipe_exclude"] = body.exclude
+    service.save_integrations(current)
+    return _public_screenpipe_settings()
+
+
+class ScreenContextRequest(BaseModel):
+    query: str | None = None
+
+
+@router.post("/screenpipe/context")
+async def screenpipe_context(
+    body: ScreenContextRequest | None = None,
+    payload=Depends(require_auth),
+) -> dict[str, Any]:
+    """Live, on-demand screen read for the tutor's ``look_at_screen`` function.
+
+    Pulls a short, fresh ScreenPipe snapshot (focused window first). Always
+    returns ``{"text": ...}``; empty when ScreenPipe is disabled/unreachable.
+    """
+    settings = _screenpipe_settings()
+    if not settings["enabled"]:
+        return {"text": ""}
+
+    from aimtutor.services.screenpipe import fetch_recent_screen_context
+
+    try:
+        text = await fetch_recent_screen_context(
+            base_url=settings["url"],
+            api_key=settings.get("api_key") or None,
+            # "Right now" → short window; cap to whatever the admin allows.
+            window_minutes=min(int(settings.get("window_minutes") or 10), 5),
+            include_audio=bool(settings.get("include_audio")),
+            exclude=settings.get("exclude") or [],
+            query=(body.query if body else None),
+            focused=True,
+        )
+    except Exception as exc:
+        logger.debug("gemini_live: look_at_screen failed (%s)", exc)
+        text = ""
+    return {"text": text}
+
+
+@router.post("/screenpipe/test")
+async def test_screenpipe(
+    body: ScreenPipeSettingsUpdate | None = None,
+    payload=Depends(require_auth),
+) -> dict[str, Any]:
+    """Probe a ScreenPipe instance for reachability (uses saved URL if none given)."""
+    from aimtutor.services.screenpipe import check_screenpipe_health
+
+    url = (body.url if body else None) or _screenpipe_settings()["url"]
+    return await check_screenpipe_health(url)
 
 
 @router.post("/token")
@@ -134,7 +415,9 @@ async def create_token(
         raise HTTPException(429, "Too many token requests. Please wait a moment.")
 
     model = _pinned_live_model()
-    system_instruction = await _build_system_instruction(body.session_id, user_id)
+    system_instruction = await _build_system_instruction(
+        body.session_id, user_id, screenpipe=body.screenpipe
+    )
     recent = (body.recent_context or "").strip()
     if recent:
         system_instruction += (
@@ -184,6 +467,21 @@ def _live_google_search_enabled() -> bool:
     )
 
 
+def _live_ui_guidance_enabled() -> bool:
+    """Whether the live tutor may drive the app via function calls (default on).
+
+    Set ``GEMINI_LIVE_UI_GUIDANCE=false`` to disable if a deployment's
+    constrained-token config rejects function declarations.
+    """
+    _load_env()
+    return os.environ.get("GEMINI_LIVE_UI_GUIDANCE", "true").strip().lower() not in (
+        "0",
+        "false",
+        "no",
+        "off",
+    )
+
+
 async def _mint_ephemeral_token(
     *,
     api_key: str,
@@ -219,8 +517,18 @@ async def _mint_ephemeral_token(
             "input_audio_transcription": {},
             "output_audio_transcription": {},
         }
+        tools: list[dict[str, Any]] = []
         if _live_google_search_enabled():
-            live_config["tools"] = [{"google_search": {}}]
+            tools.append({"google_search": {}})
+        declarations: list[dict[str, Any]] = []
+        if _live_ui_guidance_enabled():
+            declarations.extend(TUTOR_UI_FUNCTION_DECLARATIONS)
+        if _screenpipe_settings()["enabled"]:
+            declarations.append(LOOK_AT_SCREEN_DECLARATION)
+        if declarations:
+            tools.append({"function_declarations": declarations})
+        if tools:
+            live_config["tools"] = tools
 
         token = client.auth_tokens.create(
             config={
@@ -244,6 +552,8 @@ async def _mint_ephemeral_token(
 async def _build_system_instruction(
     session_id: str | None,
     user_id: str,
+    *,
+    screenpipe: bool | None = None,
 ) -> str:
     lines = [
         "You are an expert AI live voice tutor. Speak naturally, like a real teacher on a call.",
@@ -262,6 +572,24 @@ async def _build_system_instruction(
         "say so honestly and ask them to share their screen or turn on the camera. Never "
         "guess or invent what is on their screen when you are not actually receiving it.",
     ]
+
+    if _live_ui_guidance_enabled():
+        lines += [
+            "",
+            "GUIDING THE APP (function calling):",
+            "You can drive the AIMTutor web app for the student using these functions: "
+            "navigate_to(page), highlight_element(target, note), click_element(target), "
+            "and clear_guidance().",
+            "Pages you can open: " + ", ".join(TUTOR_NAV_PAGES) + ".",
+            "Controls you can spotlight or click: " + ", ".join(TUTOR_UI_TARGETS) + ".",
+            "When you teach the student how to do something in the app, prefer "
+            "highlight_element to point at the right control while you explain it, and "
+            "navigate_to to take them to the right page. Use click_element only when the "
+            "student explicitly asks you to do it for them. Keep narrating naturally — "
+            "say what you are pointing at as you call the function. Call clear_guidance "
+            "when you are done pointing. Only ever reference the exact page and target "
+            "names listed above; never invent new ones.",
+        ]
 
     if session_id:
         try:
@@ -287,7 +615,61 @@ async def _build_system_instruction(
         except Exception as exc:
             logger.warning("gemini_live: failed to load session context: %s", exc)
 
+    screen_block = await _build_screenpipe_block(screenpipe)
+    if screen_block:
+        lines.append(screen_block)
+
+    if screenpipe is not False and _screenpipe_settings()["enabled"]:
+        lines += [
+            "",
+            "LIVE SCREEN (ScreenPipe):",
+            "You can call look_at_screen(query) at any time to read what is on the "
+            "student's screen right now. Use it when they ask about what they are "
+            "seeing, mention something on their screen, or you need fresh context — "
+            "do not guess. Pass keywords in query to find something specific.",
+        ]
+
     return "\n".join(lines)
+
+
+async def _build_screenpipe_block(screenpipe: bool | None) -> str:
+    """Build the recent-screen-activity block from ScreenPipe, if enabled.
+
+    The integrations toggle is the master switch. A client may additionally opt
+    out by sending ``screenpipe=False``. Any failure (disabled, unreachable,
+    timeout, empty) returns ``""`` and never breaks token creation.
+    """
+    if screenpipe is False:
+        return ""
+
+    settings = _screenpipe_settings()
+    if not settings["enabled"]:
+        return ""
+
+    try:
+        from aimtutor.services.screenpipe import fetch_recent_screen_context
+
+        text = await fetch_recent_screen_context(
+            base_url=settings["url"],
+            api_key=settings.get("api_key") or None,
+            window_minutes=int(settings.get("window_minutes") or 10),
+            include_audio=bool(settings.get("include_audio")),
+            exclude=settings.get("exclude") or [],
+        )
+    except Exception as exc:
+        logger.debug("gemini_live: screenpipe context unavailable (%s)", exc)
+        return ""
+
+    if not text:
+        return ""
+
+    return (
+        "\nRECENT SCREEN ACTIVITY (from ScreenPipe — background OCR of what the "
+        "student was recently looking at across their apps; may be noisy or "
+        "out of date, so use it only as soft context and rely on the live "
+        "screen/camera frames for anything you need to read precisely):\n"
+        + text
+    )
 
 
 # Keep the live system prompt within a sane size: Gemini Live caps the

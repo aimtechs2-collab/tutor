@@ -433,24 +433,26 @@ export default memo(function ChatComposer({
               />
             </div>
           )}
-          <ComposerInput
-            ref={inputHandleRef}
-            textareaRef={textareaRef}
-            isVisualizeMode={isVisualizeMode}
-            canSendEmpty={hasReferences}
-            onSend={doSend}
-            onInputChange={handleInputChange}
-            onPaste={onPaste}
-            selectedCounts={spaceSelectionCounts}
-            onSelectNotebookPicker={onSelectNotebookPicker}
-            onSelectBookPicker={onSelectBookPicker}
-            onSelectHistoryPicker={onSelectHistoryPicker}
-            onSelectQuestionBankPicker={onSelectQuestionBankPicker}
-            onSelectSkillsPicker={onSelectSkillsPicker}
-            onSelectMemoryPicker={onSelectMemoryPicker}
-            placeholder={inputPlaceholder}
-            minHeight={hasMessages ? 28 : 88}
-          />
+          <div data-tutor-id="composer.input">
+            <ComposerInput
+              ref={inputHandleRef}
+              textareaRef={textareaRef}
+              isVisualizeMode={isVisualizeMode}
+              canSendEmpty={hasReferences}
+              onSend={doSend}
+              onInputChange={handleInputChange}
+              onPaste={onPaste}
+              selectedCounts={spaceSelectionCounts}
+              onSelectNotebookPicker={onSelectNotebookPicker}
+              onSelectBookPicker={onSelectBookPicker}
+              onSelectHistoryPicker={onSelectHistoryPicker}
+              onSelectQuestionBankPicker={onSelectQuestionBankPicker}
+              onSelectSkillsPicker={onSelectSkillsPicker}
+              onSelectMemoryPicker={onSelectMemoryPicker}
+              placeholder={inputPlaceholder}
+              minHeight={hasMessages ? 28 : 88}
+            />
+          </div>
 
           {!!attachments.length && (
             <div className="flex flex-wrap gap-2 px-4 pb-2">
@@ -587,6 +589,7 @@ export default memo(function ChatComposer({
               <div className="relative">
                 <button
                   ref={capBtnRef}
+                  data-tutor-id="composer.capabilities"
                   onClick={() => onSetCapMenuOpen((v) => !v)}
                   className={`inline-flex ${composerCompact ? "" : "min-w-[118px]"} shrink-0 items-center justify-between gap-1.5 rounded-full border bg-[var(--card)] px-3 py-[6px] text-[13px] font-medium text-[var(--foreground)] shadow-[0_1px_2px_color-mix(in_srgb,var(--foreground)_4%,transparent)] transition-[background-color,border-color,color,box-shadow] duration-150 ${
                     capMenuOpen
@@ -651,6 +654,7 @@ export default memo(function ChatComposer({
               <div className="flex min-w-0 flex-1 items-center gap-1">
                 <button
                   type="button"
+                  data-tutor-id="composer.attach"
                   onClick={handlePickFiles}
                   title={t("Attach files")}
                   aria-label={t("Attach files")}
@@ -671,6 +675,7 @@ export default memo(function ChatComposer({
                   <button
                     ref={kbBtnRef}
                     type="button"
+                    data-tutor-id="composer.knowledge"
                     onClick={() => onSetKbMenuOpen((v) => !v)}
                     disabled={knowledgeBases.length === 0}
                     title={
@@ -734,6 +739,7 @@ export default memo(function ChatComposer({
                   <button
                     ref={spaceBtnRef}
                     type="button"
+                    data-tutor-id="composer.space"
                     onClick={() => onSetSpaceMenuOpen((v) => !v)}
                     title={t("Space")}
                     aria-label={t("Space")}
@@ -823,6 +829,7 @@ export default memo(function ChatComposer({
                   // composer doesn't have a "live" send button.
                   <button
                     type="button"
+                    data-tutor-id="composer.send"
                     onClick={handleManualSend}
                     disabled={!(hasContent || hasReferences) || isStreaming}
                     title={
@@ -873,6 +880,7 @@ function VoiceTutorButton({
   return (
     <button
       type="button"
+      data-tutor-id="composer.voice"
       onClick={() => {
         if (!enabled || !onOpenChange) return;
         onOpenChange(!open);
