@@ -53,7 +53,8 @@ export interface GeminiLiveHook {
   startVideo: (source: VideoSource, captureFps?: number) => Promise<void>;
   stopVideo: () => void;
   interrupt: () => void;
-  sendText: (text: string) => void;
+  sendText: (text: string, opts?: { silent?: boolean }) => void;
+  sendImage: (b64: string, mimeType?: string) => void;
   clearTranscript: () => void;
 }
 
@@ -63,8 +64,10 @@ const MAX_RECONNECT = 3;
 const LIVE_GREET_SIGNAL = "__GREET_USER__";
 const LIVE_GREET_DELAY_MS = 700;
 
+const HIDDEN_LIVE_SIGNALS = new Set([LIVE_GREET_SIGNAL]);
+
 function isHiddenLiveSignal(text: string): boolean {
-  return text.trim() === LIVE_GREET_SIGNAL;
+  return HIDDEN_LIVE_SIGNALS.has(text.trim());
 }
 
 function appendTranscriptTurn(
@@ -131,6 +134,7 @@ export function useGeminiLive(): GeminiLiveHook {
     if (videoPreviewRef.current) {
       videoPreviewRef.current.srcObject = null;
     }
+    videoSourceRef.current = null;
     setVideoSource(null);
   }, []);
 
@@ -162,18 +166,23 @@ export function useGeminiLive(): GeminiLiveHook {
       try {
         stopVideo();
         const streamer = new VideoStreamer();
+        // MyTutor parity: every captured frame goes straight to the live
+        // socket — no gating, no hidden signals. The model simply receives
+        // the frames and describes what it sees.
+        videoSourceRef.current = source;
         await streamer.start(
           source,
           (frame) => clientRef.current?.sendImage(frame),
           videoPreviewRef.current,
           fps,
           () => {
+            // Browser "Stop sharing" ended the track — clear UI state.
+            videoStreamerRef.current = null;
             videoSourceRef.current = null;
             setVideoSource(null);
           },
         );
         videoStreamerRef.current = streamer;
-        videoSourceRef.current = source;
         setVideoSource(source);
         setError(null);
       } catch (err) {
@@ -356,12 +365,22 @@ export function useGeminiLive(): GeminiLiveHook {
     setStatus("listening");
   }, []);
 
-  const sendText = useCallback((text: string) => {
-    const t = text.trim();
-    if (!t) return;
-    if (!isHiddenLiveSignal(t)) addTranscript("user", t);
-    clientRef.current?.sendText(t);
-  }, [addTranscript]);
+  const sendText = useCallback(
+    (text: string, opts?: { silent?: boolean }) => {
+      const t = text.trim();
+      if (!t) return;
+      // `silent` lets callers feed large context (e.g. an uploaded document's
+      // extracted text) to the model without flooding the visible transcript.
+      if (!opts?.silent && !isHiddenLiveSignal(t)) addTranscript("user", t);
+      clientRef.current?.sendText(t);
+    },
+    [addTranscript],
+  );
+
+  const sendImage = useCallback((b64: string, mimeType = "image/jpeg") => {
+    if (!b64 || !clientRef.current) return;
+    clientRef.current.sendVisualFrame(b64, mimeType);
+  }, []);
 
   const clearTranscript = useCallback(() => {
     transcriptRef.current = [];
@@ -388,6 +407,7 @@ export function useGeminiLive(): GeminiLiveHook {
     stopVideo,
     interrupt,
     sendText,
+    sendImage,
     clearTranscript,
   };
 }

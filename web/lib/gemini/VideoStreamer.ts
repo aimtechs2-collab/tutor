@@ -29,19 +29,6 @@ async function waitForVideoFrame(v: HTMLVideoElement): Promise<void> {
   await v.play().catch(() => {});
 }
 
-function isMostlyBlank(ctx: CanvasRenderingContext2D, w: number, h: number): boolean {
-  const sample = 24;
-  const sw = Math.max(1, Math.floor(w / sample));
-  const sh = Math.max(1, Math.floor(h / sample));
-  const data = ctx.getImageData(0, 0, sw, sh);
-  let sum = 0;
-  for (let i = 0; i < data.data.length; i += 4) {
-    sum += data.data[i] + data.data[i + 1] + data.data[i + 2];
-  }
-  const avg = sum / (data.data.length / 4);
-  return avg < 8;
-}
-
 export class VideoStreamer {
   private stream: MediaStream | null = null;
   private intervalId: ReturnType<typeof setInterval> | null = null;
@@ -120,14 +107,15 @@ export class VideoStreamer {
     };
     resizeCanvas();
 
-    const periodMs = Math.max(1000, Math.floor(1000 / Math.max(1, targetFps)));
+    const periodMs = Math.max(200, Math.floor(1000 / Math.max(1, targetFps)));
 
     const captureFrame = () => {
       try {
+        // NOTE: do NOT bail when document.visibilityState === "hidden". While
+        // screen sharing the user is almost always focused on the app they are
+        // sharing, so this tab is "hidden" — skipping frames there means the
+        // model never sees the screen. We keep capturing regardless of focus.
         if (!this.stream?.active) return;
-        if (typeof document !== "undefined" && document.visibilityState === "hidden") {
-          return;
-        }
         const el = this.hiddenVideo;
         const ctx = this.ctx;
         const canvas = this.canvas;
@@ -141,12 +129,11 @@ export class VideoStreamer {
         }
         if (el.videoWidth <= 0 || el.videoHeight <= 0) return;
         ctx.drawImage(el, 0, 0, canvas.width, canvas.height);
-        if (isMostlyBlank(ctx, canvas.width, canvas.height)) return;
         const dataUrl = canvas.toDataURL("image/jpeg", 0.88);
         const b64 = dataUrl.split(",")[1];
         if (b64) onFrame(b64);
       } catch {
-        /* tab unfocused or frame not ready */
+        /* frame not ready */
       }
     };
 

@@ -9,6 +9,11 @@ interface AutoScrollOptions {
   messageCount: number;
   lastMessageContent?: string;
   lastEventCount?: number;
+  /** Live voice transcript — scroll parent when turns update. */
+  liveTranscriptLength?: number;
+  liveTranscriptTail?: string;
+  liveVoiceActive?: boolean;
+  liveVoiceStatus?: "idle" | "connecting" | "listening" | "speaking" | "reconnecting" | "error";
 }
 
 const THROTTLE_MS = 80;
@@ -20,6 +25,10 @@ export function useChatAutoScroll({
   messageCount,
   lastMessageContent,
   lastEventCount,
+  liveTranscriptLength = 0,
+  liveTranscriptTail = "",
+  liveVoiceActive = false,
+  liveVoiceStatus = "idle",
 }: AutoScrollOptions) {
   const containerRef = useRef<HTMLDivElement>(null);
   const endRef = useRef<HTMLDivElement>(null);
@@ -41,8 +50,12 @@ export function useChatAutoScroll({
 
     const now = performance.now();
     const elapsed = now - lastScrollTimeRef.current;
+    const liveStreaming =
+      liveVoiceActive &&
+      (liveVoiceStatus === "listening" || liveVoiceStatus === "speaking");
+    const fastScroll = isStreaming || liveStreaming;
 
-    if (isStreaming && elapsed < THROTTLE_MS) {
+    if (fastScroll && elapsed < THROTTLE_MS) {
       if (pendingRafRef.current) return;
       pendingRafRef.current = window.setTimeout(() => {
         pendingRafRef.current = 0;
@@ -60,7 +73,7 @@ export function useChatAutoScroll({
     }
 
     const raf = window.requestAnimationFrame(() => {
-      scrollToBottom(isStreaming ? "instant" : "smooth");
+      scrollToBottom(fastScroll ? "instant" : "smooth");
       lastScrollTimeRef.current = performance.now();
     });
 
@@ -75,17 +88,22 @@ export function useChatAutoScroll({
     isStreaming,
     lastEventCount,
     lastMessageContent,
+    liveTranscriptLength,
+    liveTranscriptTail,
+    liveVoiceActive,
+    liveVoiceStatus,
     messageCount,
     scrollToBottom,
   ]);
 
   useEffect(() => {
-    if (!hasMessages || !shouldAutoScrollRef.current) return;
+    if (!hasMessages && !liveVoiceActive) return;
+    if (!shouldAutoScrollRef.current) return;
     const raf = window.requestAnimationFrame(() => {
       scrollToBottom("instant");
     });
     return () => window.cancelAnimationFrame(raf);
-  }, [composerHeight, hasMessages, scrollToBottom]);
+  }, [composerHeight, hasMessages, liveVoiceActive, scrollToBottom]);
 
   // After streaming ends, dynamically-loaded components (e.g. MathAnimatorViewer
   // via next/dynamic) may render and grow the content height. Detect that and

@@ -68,8 +68,13 @@ test("docIconFor: SVG gets its own label", () => {
   assert.ok(docIconFor("logo.svg").tint.includes("teal"));
 });
 
+test("classifyFile: archive audio video", () => {
+  assert.equal(classifyFile(makeFile("a.zip", "application/zip")), "archive");
+  assert.equal(classifyFile(makeFile("clip.mp3", "audio/mpeg")), "audio");
+  assert.equal(classifyFile(makeFile("clip.mp4", "video/mp4")), "video");
+});
+
 test("classifyFile: rejects unsupported", () => {
-  assert.equal(classifyFile(makeFile("a.zip", "application/zip")), null);
   assert.equal(
     classifyFile(makeFile("a.exe", "application/x-msdownload")),
     null,

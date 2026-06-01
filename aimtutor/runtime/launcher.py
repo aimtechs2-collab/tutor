@@ -23,7 +23,10 @@ from aimtutor.runtime.banner import labels_for, print_banner, resolve_language
 from aimtutor.runtime.home import AIMTUTOR_HOME_ENV, PACKAGE_ROOT, get_runtime_home
 
 BACKEND_READY_TIMEOUT = 60
-FRONTEND_READY_TIMEOUT = 120
+# Dev (source) frontends compile routes lazily, so readiness is port-based and
+# this timeout only needs to cover the Next.js server boot. Packaged builds are
+# precompiled and answer HTTP immediately. Overridable for slow machines.
+FRONTEND_READY_TIMEOUT = int(os.environ.get("AIMTUTOR_FRONTEND_READY_TIMEOUT", "180"))
 FRONTEND_REUSE_PROBE_TIMEOUT = 2
 KILL_SIGNAL = getattr(signal, "SIGKILL", signal.SIGTERM)
 WEB_CACHE_DIR = Path("data") / "user" / "runtime" / "web"
@@ -216,6 +219,36 @@ def _wait_for_http(
                 return
         except (urlerror.URLError, TimeoutError, OSError):
             time.sleep(0.5)
+    raise RuntimeError(_t("start.not_ready", name=name, timeout=timeout))
+
+
+def _wait_for_port(
+    *,
+    name: str,
+    url: str,
+    port: int,
+    process: ManagedProcess | None,
+    timeout: int,
+    should_stop: Callable[[], bool],
+) -> None:
+    """Wait until ``port`` accepts TCP connections (server has booted).
+
+    Used for dev (source) frontends: Next.js compiles routes on first request,
+    so a full HTTP ``GET /`` health check can block far longer than the server
+    actually needs to start. The browser triggers compilation on first visit,
+    so listening on the port is a sufficient readiness signal here.
+    """
+    _log(_t("start.waiting_for", name=name, url=url))
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if should_stop():
+            return
+        if process is not None and process.process.poll() is not None:
+            raise RuntimeError(_t("start.exited", name=name, code=process.process.returncode))
+        if _port_accepts_connection(port):
+            _log(_t("start.ready", name=name))
+            return
+        time.sleep(0.5)
     raise RuntimeError(_t("start.not_ready", name=name, timeout=timeout))
 
 
@@ -668,13 +701,25 @@ def start(home: str | Path | None = None) -> None:
             _log(_t("start.starting_frontend"))
             web = _spawn(frontend.command, cwd=frontend.cwd, env=common_env, name="frontend")
             processes.append(web)
-            _wait_for_http(
-                name=_t("start.frontend"),
-                url=f"http://127.0.0.1:{frontend_port}/",
-                process=web,
-                timeout=FRONTEND_READY_TIMEOUT,
-                should_stop=lambda: shutdown_requested,
-            )
+            if frontend.kind == "source":
+                # Dev server: ready once it is listening; routes compile lazily
+                # on first request, so avoid a slow blocking GET / health check.
+                _wait_for_port(
+                    name=_t("start.frontend"),
+                    url=f"http://127.0.0.1:{frontend_port}/",
+                    port=frontend_port,
+                    process=web,
+                    timeout=FRONTEND_READY_TIMEOUT,
+                    should_stop=lambda: shutdown_requested,
+                )
+            else:
+                _wait_for_http(
+                    name=_t("start.frontend"),
+                    url=f"http://127.0.0.1:{frontend_port}/",
+                    process=web,
+                    timeout=FRONTEND_READY_TIMEOUT,
+                    should_stop=lambda: shutdown_requested,
+                )
         _log(_t("start.open_in_browser", url=frontend_url))
 
         while not shutdown_requested:
