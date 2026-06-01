@@ -197,6 +197,40 @@ export const SUPPORTED_DOC_MIMES = new Set<string>([
 export const MAX_ATTACHMENT_BYTES = 10 * 1024 * 1024;
 export const MAX_TOTAL_ATTACHMENT_BYTES = 25 * 1024 * 1024;
 
+/** MIME types accepted for non-image uploads (keep in sync with backend mime_registry). */
+export const ARCHIVE_MIMES = new Set<string>([
+  "application/zip",
+  "application/x-zip-compressed",
+  "application/x-zip",
+]);
+
+export const AUDIO_MIMES = new Set<string>([
+  "audio/mpeg",
+  "audio/mp3",
+  "audio/mp4",
+  "audio/m4a",
+  "audio/wav",
+  "audio/x-wav",
+  "audio/webm",
+  "audio/ogg",
+  "audio/flac",
+  "audio/aac",
+]);
+
+export const VIDEO_MIMES = new Set<string>([
+  "video/mp4",
+  "video/webm",
+  "video/quicktime",
+  "video/x-msvideo",
+  "video/x-matroska",
+]);
+
+export const ARCHIVE_EXTS = [".zip"] as const;
+export const AUDIO_EXTS = [".mp3", ".wav", ".m4a", ".ogg", ".webm", ".flac", ".aac"] as const;
+export const VIDEO_EXTS = [".mp4", ".webm", ".mov", ".avi", ".mkv"] as const;
+
+export type FileKind = "image" | "doc" | "archive" | "audio" | "video";
+
 /**
  * `accept` attribute for the chat composer's file picker. Mirrors the formats
  * the drag-and-drop / paste paths accept (see `classifyFile`). Listing both
@@ -206,10 +240,14 @@ export const MAX_TOTAL_ATTACHMENT_BYTES = 25 * 1024 * 1024;
 export const ATTACHMENT_ACCEPT = [
   "image/*",
   ...SUPPORTED_DOC_EXTS,
+  ...ARCHIVE_EXTS,
+  ...AUDIO_EXTS,
+  ...VIDEO_EXTS,
   ...Array.from(SUPPORTED_DOC_MIMES),
+  ...Array.from(ARCHIVE_MIMES),
+  ...Array.from(AUDIO_MIMES),
+  ...Array.from(VIDEO_MIMES),
 ].join(",");
-
-export type FileKind = "image" | "doc";
 
 export function extOf(filename: string): string {
   const idx = filename.lastIndexOf(".");
@@ -231,6 +269,12 @@ export function classifyFile(file: File): FileKind | null {
   const ext = extOf(file.name);
   if (ext === ".svg" || file.type === "image/svg+xml") return "doc";
   if (file.type && file.type.startsWith("image/")) return "image";
+  if (file.type && ARCHIVE_MIMES.has(file.type)) return "archive";
+  if (file.type && AUDIO_MIMES.has(file.type)) return "audio";
+  if (file.type && VIDEO_MIMES.has(file.type)) return "video";
+  if (ext && (ARCHIVE_EXTS as readonly string[]).includes(ext)) return "archive";
+  if (ext && (AUDIO_EXTS as readonly string[]).includes(ext)) return "audio";
+  if (ext && (VIDEO_EXTS as readonly string[]).includes(ext)) return "video";
   if (file.type && SUPPORTED_DOC_MIMES.has(file.type)) return "doc";
   if (ext && (SUPPORTED_DOC_EXTS as readonly string[]).includes(ext))
     return "doc";

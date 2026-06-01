@@ -1172,9 +1172,9 @@ class TurnRuntimeManager:
                         exc,
                     )
 
-            from aimtutor.utils.document_extractor import extract_documents_from_records
+            from aimtutor.services.uploads import process_attachment_records
 
-            document_texts, attachment_records = extract_documents_from_records(attachment_records)
+            document_texts, attachment_records = process_attachment_records(attachment_records)
             attachments = [
                 Attachment(
                     type=r.get("type", "file"),

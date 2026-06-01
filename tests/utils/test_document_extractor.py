@@ -335,13 +335,14 @@ class TestExtractDocumentsFromRecords:
         assert updated[1]["base64"] == ""
         assert updated[1]["extracted_chars"] > 0
 
-    def test_unsupported_record_is_passthrough(self) -> None:
+    def test_unsupported_extension_is_rejected(self) -> None:
         records = [
-            {"type": "file", "filename": "foo.zip", "base64": "AAAA", "mime_type": "", "url": ""}
+            {"type": "file", "filename": "foo.bin", "base64": "AAAA", "mime_type": "", "url": ""}
         ]
         doc_texts, updated = extract_documents_from_records(records)
-        assert doc_texts == []
-        assert updated[0]["base64"] == "AAAA"  # untouched — not a doc extension
+        assert len(doc_texts) == 1
+        assert "rejected" in doc_texts[0].lower()
+        assert updated[0]["base64"] == ""
 
     def test_failed_extraction_emits_error_marker(self) -> None:
         records = [
@@ -356,7 +357,7 @@ class TestExtractDocumentsFromRecords:
         doc_texts, updated = extract_documents_from_records(records)
         assert len(doc_texts) == 1
         assert "bad.pdf" in doc_texts[0]
-        assert "could not be read" in doc_texts[0]
+        assert "rejected" in doc_texts[0].lower() or "could not be read" in doc_texts[0]
         assert updated[0]["base64"] == ""  # stripped even on failure
 
     def test_invalid_base64_emits_error_marker(self) -> None:

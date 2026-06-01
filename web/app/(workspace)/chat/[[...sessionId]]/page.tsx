@@ -31,7 +31,9 @@ import type { SelectedRecord } from "@/lib/notebook-selection-types";
 import type { SelectedHistorySession } from "@/components/chat/HistorySessionPicker";
 import type { SelectedQuestionEntry } from "@/components/chat/QuestionBankPicker";
 import LiveRoutedChatComposer from "@/components/gemini-live/LiveRoutedChatComposer";
+import { LiveScrollMetaReporter } from "@/components/gemini-live/LiveTranscriptArea";
 import { ChatMessageList } from "@/components/chat/home/ChatMessages";
+import type { VoiceStatus } from "@/hooks/useGeminiLive";
 
 import { LiveVoiceProvider } from "@/context/LiveVoiceContext";
 
@@ -341,6 +343,23 @@ export default function ChatPage() {
   );
   const [attachments, setAttachments] = useState<PendingAttachment[]>([]);
   const [liveVoiceOpen, setLiveVoiceOpen] = useState(false);
+  const [liveScrollMeta, setLiveScrollMeta] = useState<{
+    length: number;
+    tail: string;
+    status: VoiceStatus;
+  }>({ length: 0, tail: "", status: "idle" });
+  const handleLiveScrollMeta = useCallback(
+    (meta: { length: number; tail: string; status: VoiceStatus }) => {
+      setLiveScrollMeta((prev) =>
+        prev.length === meta.length &&
+        prev.tail === meta.tail &&
+        prev.status === meta.status
+          ? prev
+          : meta,
+      );
+    },
+    [],
+  );
   const [dragging, setDragging] = useState(false);
   const [attachmentError, setAttachmentError] = useState<string | null>(null);
   const [previewSource, setPreviewSource] = useState<FilePreviewSource | null>(
@@ -850,6 +869,10 @@ export default function ChatPage() {
     messageCount: state.messages.length,
     lastMessageContent: lastMessage?.content,
     lastEventCount: lastMessage?.events?.length,
+    liveVoiceActive: liveVoiceOpen,
+    liveTranscriptLength: liveScrollMeta.length,
+    liveTranscriptTail: liveScrollMeta.tail,
+    liveVoiceStatus: liveScrollMeta.status,
   });
   const copyAssistantMessage = useCallback(async (content: string) => {
     if (!content.trim()) return;
@@ -1188,7 +1211,8 @@ export default function ChatPage() {
             // reject SVG) but keep the data URL so the chip can render a
             // thumbnail via a raw <img> tag.
             const svg = isSvgFilename(f.name) || f.type === "image/svg+xml";
-            const isImage = !svg && f.type.startsWith("image/");
+            const kind = classifyFile(f);
+            const isImage = kind === "image";
             const b64 = extractBase64FromDataUrl(raw);
             resolve({
               type: isImage ? "image" : "file",
@@ -1920,6 +1944,7 @@ export default function ChatPage() {
             onPersistTranscript={handlePersistLiveTranscript}
             onEnd={() => setLiveVoiceOpen(false)}
           >
+          <LiveScrollMetaReporter onMeta={handleLiveScrollMeta} />
           <div className="mx-auto flex w-full max-w-[960px] flex-1 min-h-0 flex-col overflow-hidden px-6">
             {showSessionLoading ? (
               <div className="flex flex-1 min-h-0 flex-col justify-end pb-14">
@@ -1983,7 +2008,10 @@ export default function ChatPage() {
                   />
                 ) : null}
                 {liveVoiceOpen ? (
-                  <LiveTranscriptArea embedded={hasMessages} />
+                  <LiveTranscriptArea
+                    embedded={hasMessages}
+                    shouldAutoScrollRef={shouldAutoScrollRef}
+                  />
                 ) : null}
                 <div ref={messagesEndRef} className="h-px w-full shrink-0" />
               </div>

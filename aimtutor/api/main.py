@@ -273,6 +273,7 @@ app.mount(
 from aimtutor.api.routers import (
     agent_config,
     attachments,
+    uploads,
     auth,
     book,
     capabilities_settings,
@@ -371,6 +372,12 @@ app.include_router(
     attachments.router,
     prefix="/api/attachments",
     tags=["attachments"],
+    dependencies=_auth,
+)
+app.include_router(
+    uploads.router,
+    prefix="/api/v1/uploads",
+    tags=["uploads"],
     dependencies=_auth,
 )
 

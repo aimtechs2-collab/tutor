@@ -253,13 +253,14 @@ async def _build_system_instruction(
         "Do NOT say \"__GREET_USER__\" out loud. Greet the student warmly in one short sentence",
         "and ask what they would like to work on, then wait for their reply.",
         "",
-        "SCREEN / CAMERA ACCESS:",
-        "You receive live JPEG frames from the student's screen or camera via Gemini Live.",
-        "Use ONLY what is visible in the latest frames — code, errors, UI text, diagrams, slides.",
-        "Do NOT invent or guess screen content, file names, URLs, or code that is not clearly visible.",
-        "If the frame is blank, loading, or unreadable, say so briefly and ask them to scroll or focus the window.",
-        "Do NOT ask them to describe what is on screen — you can see it. Refer to specific visible details.",
-        "When you see an error or bug on screen, tutor from that evidence before giving generic advice.",
+        "SCREEN / CAMERA:",
+        "When the student shares their screen or turns on their camera, you receive "
+        "their live image frames. Look at the most recent frames and help with what you "
+        "actually see — read the text, code, diagrams, apps, or objects that are visible.",
+        "Base everything you say only on what is genuinely visible in the frames. If the "
+        "frames look blank or unreadable, or you are not receiving any video right now, "
+        "say so honestly and ask them to share their screen or turn on the camera. Never "
+        "guess or invent what is on their screen when you are not actually receiving it.",
     ]
 
     if session_id:
@@ -267,8 +268,10 @@ async def _build_system_instruction(
             store = get_session_store()
             session = await store.get_session_with_messages(session_id)
             if session:
+                messages = session.get("messages", [])
+
                 context_lines = []
-                for m in session.get("messages", [])[-10:]:
+                for m in messages[-10:]:
                     role = m.get("role", "")
                     content = str(m.get("content", ""))[:200]
                     if role and content:
@@ -277,7 +280,68 @@ async def _build_system_instruction(
                     lines.append(
                         "\nCONTEXT (recent chat history):\n" + "\n".join(context_lines)
                     )
+
+                doc_block = _build_attached_documents_block(messages)
+                if doc_block:
+                    lines.append(doc_block)
         except Exception as exc:
             logger.warning("gemini_live: failed to load session context: %s", exc)
 
     return "\n".join(lines)
+
+
+# Keep the live system prompt within a sane size: Gemini Live caps the
+# constrained-token config, and very large prompts slow the first reply.
+_LIVE_DOC_CHARS_PER_FILE = 6_000
+_LIVE_DOC_CHARS_TOTAL = 20_000
+
+
+def _build_attached_documents_block(messages: list[dict[str, Any]]) -> str:
+    """Surface text extracted from uploaded documents into the live prompt.
+
+    Chat persists each upload's extracted text on the message's ``attachments``
+    (``extracted_text``), not in ``content``. Without this, the voice tutor has
+    no idea what the student uploaded. We include the most recent documents
+    first, within a small character budget so the prompt stays responsive.
+    """
+    collected: list[str] = []
+    total = 0
+    seen: set[str] = set()
+
+    for m in reversed(messages):
+        attachments = m.get("attachments") or []
+        if not isinstance(attachments, list):
+            continue
+        for att in attachments:
+            if not isinstance(att, dict):
+                continue
+            text = str(att.get("extracted_text") or "").strip()
+            if not text:
+                continue
+            name = str(att.get("filename") or "document").strip() or "document"
+            key = f"{name}:{len(text)}"
+            if key in seen:
+                continue
+            seen.add(key)
+
+            if total >= _LIVE_DOC_CHARS_TOTAL:
+                break
+            budget = min(_LIVE_DOC_CHARS_PER_FILE, _LIVE_DOC_CHARS_TOTAL - total)
+            snippet = text[:budget]
+            if len(text) > budget:
+                snippet += " …(truncated)"
+            total += len(snippet)
+            collected.append(f"--- {name} ---\n{snippet}")
+        if total >= _LIVE_DOC_CHARS_TOTAL:
+            break
+
+    if not collected:
+        return ""
+
+    # Re-reverse so documents read oldest→newest, matching upload order.
+    collected.reverse()
+    return (
+        "\nATTACHED DOCUMENTS (uploaded by the student in this chat — "
+        "answer questions about them from this text; do not say you cannot see files):\n"
+        + "\n\n".join(collected)
+    )

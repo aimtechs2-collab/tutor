@@ -540,99 +540,10 @@ def _collect_pptx_shape_text(shape, out: list[str]) -> None:
 def extract_documents_from_records(
     records: Iterable[dict],
 ) -> tuple[list[str], list[dict]]:
-    """Process a list of attachment records from the WS payload.
+    """Process attachment records via the MIME upload router.
 
-    Parameters
-    ----------
-    records:
-        Raw attachment records as parsed by the turn runtime
-        (``{"type", "url", "base64", "filename", "mime_type"}``).
-
-    Returns
-    -------
-    (doc_texts, updated_records)
-        ``doc_texts`` is a list of strings formatted as
-        ``"[File: <name>]\\n<text>"`` (one per processed or skipped doc).
-        ``updated_records`` is the input list with the ``base64`` field
-        cleared on successfully-extracted docs (to save DB space), an
-        ``extracted_chars`` field added, and the extracted plain text
-        stored under ``extracted_text`` so the chat UI can preview office
-        documents without re-running the parser. Image / non-document
-        records are returned unchanged.
+    See :mod:`aimtutor.services.uploads.router` for pipeline details.
     """
-    doc_texts: list[str] = []
-    updated: list[dict] = []
-    total_bytes = 0
-    total_chars = 0
-    over_quota = False
+    from aimtutor.services.uploads.router import process_attachment_records
 
-    for raw in records:
-        record = dict(raw)
-        filename = str(record.get("filename") or "")
-        if not is_document_extension(filename):
-            updated.append(record)
-            continue
-
-        b64 = record.get("base64") or ""
-        if not b64:
-            updated.append(record)
-            continue
-
-        if over_quota:
-            doc_texts.append(f"[File: {filename} — skipped: total attachment quota exceeded]")
-            record["base64"] = ""
-            record["extracted_chars"] = 0
-            updated.append(record)
-            continue
-
-        try:
-            data = base64.b64decode(b64, validate=False)
-        except Exception as exc:
-            doc_texts.append(f"[File: {filename} — could not be read: invalid base64 ({exc})]")
-            record["base64"] = ""
-            record["extracted_chars"] = 0
-            updated.append(record)
-            continue
-
-        if total_bytes + len(data) > MAX_TOTAL_DOC_BYTES:
-            over_quota = True
-            doc_texts.append(f"[File: {filename} — skipped: total attachment quota exceeded]")
-            record["base64"] = ""
-            record["extracted_chars"] = 0
-            updated.append(record)
-            continue
-
-        total_bytes += len(data)
-
-        try:
-            text = extract_text_from_bytes(filename, data)
-        except DocumentExtractionError as exc:
-            logger.info("Document extraction failed for %s: %s", filename, exc)
-            doc_texts.append(f"[File: {filename} — could not be read: {exc}]")
-            record["base64"] = ""
-            record["extracted_chars"] = 0
-            updated.append(record)
-            continue
-
-        remaining_budget = MAX_EXTRACTED_CHARS_TOTAL - total_chars
-        if remaining_budget <= 0:
-            doc_texts.append(f"[File: {filename} — skipped: total extracted-text quota exceeded]")
-            record["base64"] = ""
-            record["extracted_chars"] = 0
-            updated.append(record)
-            continue
-
-        if len(text) > remaining_budget:
-            text = (
-                text[:remaining_budget]
-                + f"... (truncated, {len(text)} chars total; turn quota hit)"
-            )
-
-        total_chars += len(text)
-        doc_texts.append(f"[File: {filename}]\n{text}")
-        record["base64"] = ""
-        record["extracted_chars"] = len(text)
-        record["extracted_text"] = text
-        updated.append(record)
-
-    return doc_texts, updated
+    return process_attachment_records(records)
