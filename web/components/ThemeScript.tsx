@@ -1,8 +1,8 @@
-import { InlineScript } from "@/components/InlineScript";
-
 /**
  * ThemeScript - Initializes theme from localStorage before React hydration.
- * Uses InlineScript so React 19 does not warn about inert client-rendered scripts.
+ * Render as a server-side inline script to avoid introducing a client chunk
+ * dependency into the root layout (which can surface as ChunkLoadError when
+ * the app/layout client chunk fails to load in dev).
  */
 export default function ThemeScript() {
   const themeScript = `
@@ -34,5 +34,5 @@ export default function ThemeScript() {
     })();
   `;
 
-  return <InlineScript html={themeScript} />;
+  return <script dangerouslySetInnerHTML={{ __html: themeScript }} />;
 }

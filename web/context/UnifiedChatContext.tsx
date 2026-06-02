@@ -284,6 +284,30 @@ function isSameTurnEvent(a: StreamEvent, b: StreamEvent): boolean {
   return Boolean(aTurn && bTurn && aTurn === bTurn);
 }
 
+function mergeAssistantContent(existing: string, incoming: string): string {
+  if (!existing) return incoming;
+  if (!incoming) return existing;
+  // Some providers emit cumulative "full answer so far" chunks while others
+  // emit token deltas. Handle both to avoid duplicated/fluctuating paragraphs.
+  if (incoming === existing) return existing;
+  // Canonical cumulative shape: next chunk starts with prior content.
+  if (incoming.length > existing.length && incoming.startsWith(existing)) {
+    return incoming;
+  }
+  // Defensive fallback for minor prefix normalization differences between
+  // chunks (e.g. whitespace tweaks): compare a stable prefix.
+  const probe = existing.slice(0, Math.min(80, existing.length)).trim();
+  if (
+    probe &&
+    incoming.length > existing.length &&
+    incoming.slice(0, Math.min(120, incoming.length)).includes(probe)
+  ) {
+    return incoming;
+  }
+  // Delta-token shape: append.
+  return existing + incoming;
+}
+
 function reducer(state: ProviderState, action: Action): ProviderState {
   switch (action.type) {
     case "SET_TOOLS":
@@ -459,8 +483,9 @@ function reducer(state: ProviderState, action: Action): ProviderState {
       }
       const events = [...(last?.events || []), action.event];
       let content = last?.content || "";
-      if (shouldAppendEventContent(action.event))
-        content += action.event.content;
+      if (shouldAppendEventContent(action.event)) {
+        content = mergeAssistantContent(content, action.event.content);
+      }
       const capability = last?.capability || session.activeCapability || "";
       msgs[msgs.length - 1] = {
         ...(last || { role: "assistant", content: "" }),

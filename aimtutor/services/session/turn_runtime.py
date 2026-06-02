@@ -1326,6 +1326,19 @@ class TurnRuntimeManager:
                 )
                 source_manifest_text, source_index = render_manifest(inventory)
                 effective_user_message = raw_user_content
+                # Chat-mode reliability: keep the source manifest + read_source
+                # tool path, but also inline the freshly extracted attachment
+                # text from this turn so "explain this PDF" works immediately
+                # even when the model does not proactively call read_source.
+                if document_texts:
+                    effective_user_message = "\n\n".join(
+                        [
+                            "[Attached Documents]",
+                            "\n\n".join(document_texts),
+                            "[User Question]",
+                            raw_user_content,
+                        ]
+                    )
             else:
                 if notebook_references:
                     referenced_records = get_notebook_manager().get_records_by_references(
