@@ -979,6 +979,14 @@ export function UnifiedChatProvider({
   // assistant message if the server rejects the request (e.g. ``regenerate_busy``
   // or ``nothing_to_regenerate``). Keyed by session entry key.
   const pendingRegenerateRef = useRef<Map<string, MessageItem>>(new Map());
+  // Turn ids we have already seen finish (``done``/terminal error). The
+  // post-``done`` reconcile refetches the session, and the backend can still
+  // list a just-finished turn under ``active_turns`` for a moment. Without
+  // this guard ``loadSession`` would re-``subscribe_turn`` to it, the server
+  // replays the buffered turn ending in another ``done``, and we loop:
+  // done → loadSession → subscribe → done → … (re-rendering the answer on
+  // every cycle). Remembering finished turns lets us skip that re-subscribe.
+  const finishedTurnIdsRef = useRef<Set<string>>(new Set());
   // Forward-declared so ``handleRunnerEvent`` (created above
   // ``loadSession`` in source order) can trigger a server refresh after
   // a turn finishes without taking a stale closure of ``loadSession``.
@@ -1130,6 +1138,14 @@ export function UnifiedChatProvider({
           (event.metadata as { status?: string } | undefined)?.status ||
             "completed",
         );
+        if (event.turn_id) {
+          const finished = finishedTurnIdsRef.current;
+          finished.add(event.turn_id);
+          // Bound the set so a long-lived tab doesn't grow it without limit.
+          if (finished.size > 200) {
+            finished.delete(finished.values().next().value as string);
+          }
+        }
         dispatch({
           type: "STREAM_END",
           key: effectiveKey,
@@ -1199,6 +1215,7 @@ export function UnifiedChatProvider({
           }
         }
         pendingRegenerateRef.current.delete(effectiveKey);
+        if (event.turn_id) finishedTurnIdsRef.current.add(event.turn_id);
         const status = String(
           (event.metadata as { status?: string } | undefined)?.status ||
             "failed",
@@ -1308,16 +1325,23 @@ export function UnifiedChatProvider({
       const activeTurn = Array.isArray(session.active_turns)
         ? session.active_turns[0]
         : undefined;
+      const activeTurnId = activeTurn?.turn_id || activeTurn?.id || null;
+      // If this "active" turn is one we already saw finish, the backend just
+      // hasn't cleared it yet. Treat it as idle and skip re-subscribing, so we
+      // don't loop done → loadSession → subscribe → done forever.
+      const activeTurnFinished =
+        activeTurnId != null && finishedTurnIdsRef.current.has(activeTurnId);
       dispatch({
         type: "LOAD_SESSION",
         key: session.session_id || session.id,
         sessionId: session.session_id || session.id,
         title: session.title || "",
         messages: hydrateMessages(session.messages ?? []),
-        activeTurnId: activeTurn?.turn_id || activeTurn?.id || null,
-        status:
-          (session.status as SessionRuntimeStatus | undefined) ||
-          (activeTurn ? "running" : "idle"),
+        activeTurnId: activeTurnFinished ? null : activeTurnId,
+        status: activeTurnFinished
+          ? "completed"
+          : (session.status as SessionRuntimeStatus | undefined) ||
+            (activeTurn ? "running" : "idle"),
         tools: Array.isArray(session.preferences?.tools)
           ? session.preferences.tools
           : [],
@@ -1334,11 +1358,11 @@ export function UnifiedChatProvider({
           session.preferences?.selected_branches,
         ),
       });
-      if (activeTurn?.turn_id || activeTurn?.id) {
+      if (activeTurnId && !activeTurnFinished) {
         const key = session.session_id || session.id;
         sendThroughRunner(key, {
           type: "subscribe_turn",
-          turn_id: activeTurn.turn_id || activeTurn.id,
+          turn_id: activeTurnId,
           after_seq: 0,
         });
       }

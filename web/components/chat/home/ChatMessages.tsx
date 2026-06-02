@@ -322,6 +322,21 @@ const AssistantMessage = memo(function AssistantMessage({
         <AssistantResponse content={msg.content} />
       )}
       {isStreaming && !hasVisibleAssistantBody ? <ResponseWarmup /> : null}
+      {/* Step-based capabilities (e.g. Solve) stream their answer in
+          stages and pause to "think" between steps. Once a body is
+          visible the warm-up indicator above is gone, so without this
+          the UI looks frozen during those gaps. Show an animated
+          "Thinking" label while the turn is still streaming and not
+          waiting on the user. */}
+      {isStreaming &&
+      hasVisibleAssistantBody &&
+      !askUserPayload &&
+      !outlinePreview &&
+      !mathAnimatorResult &&
+      !visualizeResult &&
+      !(quizQuestions && quizQuestions.length > 0) ? (
+        <StepThinking />
+      ) : null}
       {/* Non-default branches (quiz, math animator, visualize) keep
           ask_user below the body. The default branch inlines the card
           via ``messageSegments``; the research branch renders its own
@@ -360,6 +375,32 @@ const ResponseWarmup = memo(function ResponseWarmup() {
 });
 
 ResponseWarmup.displayName = "ResponseWarmup";
+
+/**
+ * Animated "Thinking" label shown at the tail of an actively-streaming
+ * step-based answer (Solve, etc.). Bridges the visual gap while the model
+ * pauses between steps so the response never looks stalled. The shimmering
+ * label + bouncing dots read as "still working" without implying an error.
+ */
+const StepThinking = memo(function StepThinking() {
+  const { t } = useTranslation();
+  return (
+    <div
+      role="status"
+      aria-live="polite"
+      className="mt-2 flex items-center gap-2 text-[13px] text-[var(--muted-foreground)]"
+    >
+      <span className="dt-thinking-shimmer font-medium">{t("Thinking")}</span>
+      <span className="flex items-center gap-1" aria-hidden="true">
+        <span className="h-1.5 w-1.5 animate-bounce rounded-full bg-current [animation-delay:0ms]" />
+        <span className="h-1.5 w-1.5 animate-bounce rounded-full bg-current [animation-delay:150ms]" />
+        <span className="h-1.5 w-1.5 animate-bounce rounded-full bg-current [animation-delay:300ms]" />
+      </span>
+    </div>
+  );
+});
+
+StepThinking.displayName = "StepThinking";
 
 /**
  * Inline "Answer now" affordance shown alongside the active assistant turn.

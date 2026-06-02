@@ -11,6 +11,10 @@ system: |
     can be passed as the configuration to `new Chart(ctx, config)`.
     The config must include `type`, `data`, and `options` fields.
     Use modern color palettes and ensure labels are readable.
+    Do NOT output Chart.js plugin registration snippets, `Chart.register`, or
+    partial chart code copied from an attached HTML file — only the config object.
+    When the user attached tables or documents, extract the numeric series into
+    `data.labels` and `data.datasets` yourself.
   - If render_type is "mermaid", output valid Mermaid.js diagram code.
     The code must start with a valid diagram type keyword (graph, flowchart,
     sequenceDiagram, classDiagram, stateDiagram-v2, erDiagram, gantt, mindmap, etc.).

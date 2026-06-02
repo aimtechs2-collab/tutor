@@ -1538,12 +1538,24 @@ class TurnRuntimeManager:
             )
 
             orch = ChatOrchestrator()
+            # Hold back the terminal ``done`` event until the assistant
+            # message is durably persisted and the turn is marked complete.
+            # The frontend reacts to ``done`` by re-fetching the session to
+            # hydrate real message ids; if that fetch raced ahead of the
+            # assistant row being written, the just-streamed answer would be
+            # dropped from local state and the next turn's context would be
+            # built against a conversation missing its latest answer — which
+            # surfaces as the assistant appearing to answer the *previous*
+            # question. Emitting ``done`` only after persistence closes that
+            # race.
+            deferred_done_event: StreamEvent | None = None
             async for event in orch.handle(context):
                 if event.type == StreamEventType.SESSION:
                     continue
-                payload_event = await self._publish_live_event(execution, event)
                 if event.type == StreamEventType.DONE:
-                    stream_done_sent = True
+                    deferred_done_event = event
+                    continue
+                payload_event = await self._publish_live_event(execution, event)
                 if payload_event.get("type") not in {"done", "session"}:
                     assistant_events.append(payload_event)
                 if _should_capture_assistant_content(event):
@@ -1582,6 +1594,12 @@ class TurnRuntimeManager:
                 )
             await self._flush_buffered_events(execution)
             await self.store.update_turn_status(turn_id, "completed")
+            # Answer + turn status are now durable: it is finally safe to tell
+            # the frontend the turn is done (any session re-fetch it triggers
+            # will now see the persisted answer).
+            if deferred_done_event is not None:
+                await self._publish_live_event(execution, deferred_done_event)
+                stream_done_sent = True
             if not is_regenerate:
                 # The frontend disconnects from this turn's WS subscription
                 # shortly after ``done`` (with a small grace window), so we

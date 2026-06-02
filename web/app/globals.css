@@ -786,6 +786,34 @@
   }
 }
 
+/* Shimmering "Thinking" label used between streamed answer steps. The
+   gradient sweeps across the text so it reads as live activity even while
+   the model is paused mid-answer. */
+.dt-thinking-shimmer {
+  background: linear-gradient(
+    90deg,
+    var(--muted-foreground) 0%,
+    var(--muted-foreground) 35%,
+    var(--foreground) 50%,
+    var(--muted-foreground) 65%,
+    var(--muted-foreground) 100%
+  );
+  background-size: 200% 100%;
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+  animation: dt-thinking-shimmer-sweep 1.6s linear infinite;
+}
+
+@keyframes dt-thinking-shimmer-sweep {
+  0% {
+    background-position: 150% 0;
+  }
+  100% {
+    background-position: -50% 0;
+  }
+}
+
 /* ─── Reduced motion ──────────────────────────────────────────────────────
    Honor the OS-level prefers-reduced-motion setting. We don't strip motion
    entirely — interaction-critical transitions (drawer slide, menu reveal)
@@ -805,7 +833,55 @@
   .dt-breathing-text,
   .dt-mark-pulse,
   .session-pulse,
+  .dt-thinking-shimmer,
   .animate-spin {
     animation: none !important;
   }
+
+  .dt-thinking-shimmer {
+    color: var(--muted-foreground);
+    -webkit-text-fill-color: currentColor;
+  }
+}
+
+/* ─── Clerk auth (sign-in / sign-up) ─────────────────────────────────────
+   Align embedded Clerk UI with AIMTutor tokens; footer + dev badge share
+   the card surface instead of default white/orange blocks. */
+.cl-auth-panel .cl-rootBox {
+  width: 100%;
+}
+
+.cl-auth-panel .cl-card,
+.cl-auth-panel .cl-cardBox {
+  width: 100%;
+  box-shadow: none;
+}
+
+.cl-auth-panel .cl-footer,
+.cl-auth-panel .cl-footerAction,
+.cl-auth-panel .cl-footerAction__signIn,
+.cl-auth-panel .cl-footerAction__signUp {
+  background: var(--card) !important;
+}
+
+.cl-auth-panel .cl-footerActionText,
+.cl-auth-panel .cl-footerActionLink {
+  color: var(--muted-foreground);
+}
+
+.cl-auth-panel .cl-footerActionLink {
+  color: var(--primary) !important;
+}
+
+.cl-auth-panel .cl-developmentModeNotice,
+.cl-auth-panel .cl-internal-b3fm6y {
+  background: var(--muted) !important;
+  color: var(--muted-foreground) !important;
+  border-color: var(--border) !important;
+}
+
+.cl-auth-panel input[type="email"],
+.cl-auth-panel input[name="identifier"] {
+  /* Reduce password-manager filling API URLs into the email field */
+  -webkit-autofill: none;
 }

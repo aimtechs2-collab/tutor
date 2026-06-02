@@ -4,7 +4,10 @@ from __future__ import annotations
 
 import json
 import re
-from typing import Any
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from aimtutor.core.context import Attachment
 
 
 def extract_json_object(text: str) -> dict[str, Any]:
@@ -85,6 +88,118 @@ def is_valid_html_document(html: str) -> bool:
     return "<html" in lowered or "<!doctype" in lowered or "<body" in lowered or "<div" in lowered
 
 
+_HTML_EXTENSIONS = (".html", ".htm")
+_HTML_MIME_MARKERS = ("text/html", "application/xhtml")
+
+
+def _attachment_filename(att: Attachment) -> str:
+    return str(getattr(att, "filename", "") or "").strip().lower()
+
+
+def _attachment_mime(att: Attachment) -> str:
+    return str(getattr(att, "mime_type", "") or "").strip().lower()
+
+
+def is_html_attachment(att: Attachment) -> bool:
+    name = _attachment_filename(att)
+    if any(name.endswith(ext) for ext in _HTML_EXTENSIONS):
+        return True
+    mime = _attachment_mime(att)
+    return any(marker in mime for marker in _HTML_MIME_MARKERS)
+
+
+def has_html_attachment(attachments: list[Attachment] | None) -> bool:
+    if not attachments:
+        return False
+    return any(is_html_attachment(att) for att in attachments)
+
+
+def extract_primary_html_attachment(attachments: list[Attachment] | None) -> str | None:
+    """Return the first renderable HTML document from attachments."""
+    if not attachments:
+        return None
+    for att in attachments:
+        if not is_html_attachment(att):
+            continue
+        text = str(getattr(att, "extracted_text", "") or "").strip()
+        if is_valid_html_document(text):
+            return text
+    return None
+
+
+_DIRECT_RENDER_HINTS = re.compile(
+    r"\b("
+    r"visuali[sz]e(\s+this)?|show\s+this|display\s+this|render\s+this|"
+    r"open\s+this|view\s+this|see\s+this|preview\s+this"
+    r")\b",
+    re.IGNORECASE,
+)
+
+
+def should_render_attached_html_directly(user_message: str) -> bool:
+    """True when the user likely wants the attached page shown as-is."""
+    text = (user_message or "").strip()
+    if not text:
+        return True
+    if "[attached documents]" in text.lower():
+        # Strip boilerplate and look at the user question tail.
+        if "[user question]" in text.lower():
+            text = text.split("[User Question]", 1)[-1].split("[user question]", 1)[-1].strip()
+    if len(text) <= 120 and _DIRECT_RENDER_HINTS.search(text):
+        return True
+    return len(text) <= 48
+
+
+def resolve_visualize_render_mode(
+    render_mode: str,
+    *,
+    attachments: list[Attachment] | None,
+    user_message: str,
+) -> str:
+    """
+  When the user attaches an HTML file, Chart.js/SVG/Mermaid are usually wrong
+  for "visualize this" — route to the HTML viewer unless they explicitly chose
+  Manim or already chose HTML.
+    """
+    mode = (render_mode or "auto").strip().lower()
+    if mode in ("manim_video", "manim_image", "html"):
+        return mode
+    if not has_html_attachment(attachments):
+        return mode
+  # Attached dashboard/report pages should render in the HTML iframe.
+    if mode in ("auto", "chartjs", "svg", "mermaid"):
+        return "html"
+    return mode
+
+
+def is_valid_chartjs_config(code: str) -> bool:
+    """Heuristic: config must look like ``new Chart(ctx, config)`` input."""
+    raw = extract_code_block(code, "javascript") or (code or "").strip()
+    if not raw:
+        return False
+    lowered = raw.lower()
+    if "chart.register" in lowered or "chart.defaults" in lowered:
+        return False
+    if "plugins:" in lowered and "type:" not in lowered:
+        return False
+    try:
+        parsed = json.loads(raw)
+    except json.JSONDecodeError:
+        jsonish = raw
+        if not jsonish.lstrip().startswith("{"):
+            return False
+        try:
+            parsed = json.loads(jsonish)
+        except json.JSONDecodeError:
+            return False
+    if not isinstance(parsed, dict):
+        return False
+    if "type" not in parsed:
+        return False
+    data = parsed.get("data")
+    return isinstance(data, dict)
+
+
 def build_fallback_html(*, title: str, summary: str = "", note: str = "") -> str:
     """Build a minimal, self-contained fallback HTML page.
 
@@ -134,5 +249,11 @@ __all__ = [
     "build_fallback_html",
     "extract_code_block",
     "extract_json_object",
+    "extract_primary_html_attachment",
+    "has_html_attachment",
+    "is_html_attachment",
+    "is_valid_chartjs_config",
     "is_valid_html_document",
+    "resolve_visualize_render_mode",
+    "should_render_attached_html_directly",
 ]

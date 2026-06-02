@@ -1,4 +1,5 @@
 import { apiFetch, apiUrl } from "@/lib/api";
+import { sanitizePostAuthRedirect } from "@/lib/auth-routes";
 
 export const AUTH_ENABLED = process.env.NEXT_PUBLIC_AUTH_ENABLED === "true";
 export const CLERK_AUTH_ENABLED =
@@ -6,10 +7,11 @@ export const CLERK_AUTH_ENABLED =
   Boolean(process.env.NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY);
 
 function signInRedirectPath(nextPath: string): string {
+  const safe = sanitizePostAuthRedirect(nextPath);
   if (CLERK_AUTH_ENABLED) {
-    return `/sign-in?redirect_url=${encodeURIComponent(nextPath)}`;
+    return `/sign-in?redirect_url=${encodeURIComponent(safe)}`;
   }
-  return `/login?next=${encodeURIComponent(nextPath)}`;
+  return `/login?next=${encodeURIComponent(safe)}`;
 }
 
 async function waitForClerkToken(maxMs = 10_000): Promise<string | null> {

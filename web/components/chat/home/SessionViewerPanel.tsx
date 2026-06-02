@@ -162,14 +162,10 @@ function SessionViewerPanelInner(
 
   // Wipe tabs whenever the session changes — preview/web state belongs to
   // the conversation that triggered it.
-  const [trackedSessionId, setTrackedSessionId] = useState<string | null>(
-    sessionId,
-  );
-  if (trackedSessionId !== sessionId) {
-    setTrackedSessionId(sessionId);
+  useEffect(() => {
     setTabs([]);
     setActiveTabId(null);
-  }
+  }, [sessionId]);
 
   const openFileTab = useCallback(
     (a: MessageAttachment) => {
@@ -298,25 +294,23 @@ function SessionViewerPanelInner(
 
   const closeTab = useCallback(
     (id: string) => {
-      setTabs((prev) => {
-        const idx = prev.findIndex((tab) => tab.id === id);
-        if (idx === -1) return prev;
-        const next = prev.filter((tab) => tab.id !== id);
-        if (activeTabId === id) {
-          if (next.length === 0) {
-            setActiveTabId(null);
-            // Closing the last tab also closes the panel — there's nothing
-            // useful left to look at.
-            onClose();
-          } else {
-            const fallback = next[Math.max(0, idx - 1)] ?? next[0];
-            setActiveTabId(fallback.id);
-          }
+      const idx = tabs.findIndex((tab) => tab.id === id);
+      if (idx === -1) return;
+      const next = tabs.filter((tab) => tab.id !== id);
+      setTabs(next);
+      if (activeTabId === id) {
+        if (next.length === 0) {
+          setActiveTabId(null);
+          // Closing the last tab also closes the panel — there's nothing
+          // useful left to look at.
+          onClose();
+        } else {
+          const fallback = next[Math.max(0, idx - 1)] ?? next[0];
+          setActiveTabId(fallback.id);
         }
-        return next;
-      });
+      }
     },
-    [activeTabId, onClose],
+    [tabs, activeTabId, onClose],
   );
 
   // ESC closes the panel.

@@ -27,7 +27,11 @@ function formatTime(iso: string): string {
   }
 }
 
-export function NotificationBell() {
+export function NotificationBell({
+  dropdownSide = "top",
+}: {
+  dropdownSide?: "top" | "bottom";
+}) {
   const [open, setOpen] = useState(false);
   const [count, setCount] = useState(0);
   const [items, setItems] = useState<AppNotification[]>([]);
@@ -115,7 +119,11 @@ export function NotificationBell() {
       </button>
 
       {open ? (
-        <div className="absolute bottom-full right-0 z-50 mb-2 w-80 overflow-hidden rounded-xl border border-[var(--border)] bg-[var(--card)] shadow-lg">
+        <div
+          className={`absolute right-0 z-50 w-80 overflow-hidden rounded-xl border border-[var(--border)] bg-[var(--card)] shadow-lg ${
+            dropdownSide === "bottom" ? "top-full mt-2" : "bottom-full mb-2"
+          }`}
+        >
           <div className="flex items-center justify-between border-b border-[var(--border)] px-3 py-2">
             <span className="text-sm font-medium text-[var(--foreground)]">Notifications</span>
             {count > 0 ? (

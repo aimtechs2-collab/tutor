@@ -98,11 +98,11 @@ const NEXT_PUBLIC_CLERK_SIGN_UP_URL = firstNonEmpty(
 );
 const NEXT_PUBLIC_CLERK_AFTER_SIGN_IN_URL = firstNonEmpty(
   process.env.NEXT_PUBLIC_CLERK_AFTER_SIGN_IN_URL,
-  "/",
+  "/chat",
 );
 const NEXT_PUBLIC_CLERK_AFTER_SIGN_UP_URL = firstNonEmpty(
   process.env.NEXT_PUBLIC_CLERK_AFTER_SIGN_UP_URL,
-  "/",
+  "/chat",
 );
 
 process.env.NEXT_PUBLIC_API_BASE = NEXT_PUBLIC_API_BASE;

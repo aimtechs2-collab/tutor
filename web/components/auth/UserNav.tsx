@@ -12,7 +12,6 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { VersionBadge } from "@/components/sidebar/VersionBadge";
 import { AdminLink } from "@/components/auth/AdminLink";
-import { NotificationBell } from "@/components/NotificationBell";
 import { useAppShell } from "@/context/AppShellContext";
 import { AUTH_ENABLED, fetchAuthStatus, logout } from "@/lib/auth";
 
@@ -298,7 +297,6 @@ export function UserNav({ collapsed: collapsedProp }: UserNavProps = {}) {
   if (CLERK_ENABLED) {
     return (
       <>
-        <NotificationBell />
         <AdminLink collapsed={collapsed} />
         <ClerkUserNav collapsed={collapsed} />
       </>
@@ -307,7 +305,6 @@ export function UserNav({ collapsed: collapsedProp }: UserNavProps = {}) {
   if (AUTH_ENABLED) {
     return (
       <>
-        <NotificationBell />
         <AdminLink collapsed={collapsed} />
         <LegacyUserNav collapsed={collapsed} />
       </>

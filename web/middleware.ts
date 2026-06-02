@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
+import { sanitizePostAuthRedirect } from "@/lib/auth-routes";
 
 const CLERK_ENABLED =
   process.env.NEXT_PUBLIC_AUTH_PROVIDER === "clerk" &&
@@ -96,7 +97,11 @@ async function clerkMiddleware(req: NextRequest) {
   if (!isPublicPath(pathname) && !hasClerkSession(req)) {
     const signInUrl = req.nextUrl.clone();
     signInUrl.pathname = "/sign-in";
-    signInUrl.searchParams.set("redirect_url", req.nextUrl.href);
+    const returnPath = `${pathname}${search}`;
+    signInUrl.searchParams.set(
+      "redirect_url",
+      sanitizePostAuthRedirect(returnPath),
+    );
     return NextResponse.redirect(signInUrl);
   }
   return NextResponse.next();

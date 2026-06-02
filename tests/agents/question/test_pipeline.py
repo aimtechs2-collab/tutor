@@ -250,6 +250,41 @@ def test_collect_issues_missing_fields() -> None:
     assert {"missing_question", "missing_correct_answer", "missing_explanation"} <= set(issues)
 
 
+def test_parse_quiz_payload_handles_braces_inside_question_code() -> None:
+    """Regression: greedy ``\{[\s\S]*\}`` used to truncate choice JSON when the
+    stem embeds JavaScript containing ``}`` characters."""
+    raw = """FINISH
+{
+  "question_type": "choice",
+  "question": "What is the output?\\n```javascript\\nfunction f() { return 1; }\\nconsole.log(f());\\n```",
+  "options": {"A": "1", "B": "2", "C": "3", "D": "4"},
+  "correct_answer": "A",
+  "explanation": "f returns 1."
+}"""
+    parsed = QuestionPipeline._parse_quiz_payload(raw)
+    assert parsed.get("question", "").startswith("What is the output?")
+    assert set((parsed.get("options") or {}).keys()) == {"A", "B", "C", "D"}
+    assert parsed.get("correct_answer") == "A"
+
+
+def test_payload_to_qa_pair_marks_schema_issues_as_error() -> None:
+    pipeline = _make_pipeline()
+    template = QuizTemplate(
+        question_id="q_1",
+        topic="Variable scope",
+        question_type="choice",
+        difficulty="medium",
+    )
+    pair = pipeline._payload_to_qa_pair(
+        template,
+        {"question": "", "correct_answer": "", "explanation": ""},
+        issues=["missing_question"],
+    )
+    assert pair.question.startswith("[Generation failed]")
+    assert pair.metadata.get("error") is True
+    assert "missing_question" in pair.metadata.get("issues", [])
+
+
 # ---------------------------------------------------------------------------
 # _emit_quiz_question — structured event shape
 # ---------------------------------------------------------------------------

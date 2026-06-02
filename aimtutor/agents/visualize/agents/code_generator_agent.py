@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 
 from aimtutor.agents.base_agent import BaseAgent
+from aimtutor.core.context import Attachment
 from aimtutor.core.trace import build_trace_metadata, new_call_id
 
 from ..models import VisualizationAnalysis
@@ -34,6 +35,7 @@ class CodeGeneratorAgent(BaseAgent):
         user_input: str,
         history_context: str,
         analysis: VisualizationAnalysis,
+        attachments: list[Attachment] | None = None,
     ) -> str:
         system_prompt = self.get_prompt("system")
         user_template = self.get_prompt("user_template")
@@ -52,6 +54,7 @@ class CodeGeneratorAgent(BaseAgent):
             user_prompt=user_prompt,
             system_prompt=system_prompt,
             stage="generating",
+            attachments=attachments,
             trace_meta=build_trace_metadata(
                 call_id=new_call_id("viz-codegen"),
                 phase="generating",

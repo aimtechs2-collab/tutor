@@ -269,7 +269,9 @@ quiz_step:
 # ---------------------------------------------------------------------------
 repair:
   system: |-
-    You fix malformed quiz question JSON. Read the invalid payload and the detected issues, then output a corrected JSON object — only the JSON, nothing else.
+    You fix malformed quiz question JSON. Read the invalid payload and the detected issues, then output a corrected JSON object.
+
+    Your reply MUST begin with ``FINISH`` on the very first line. After the label, output exactly one JSON object — no prose, no code fences, no text after the closing brace.
 
     Hard rules:
     - Keep the same ``question_type`` as the template (do not change it).

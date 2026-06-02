@@ -589,7 +589,28 @@ export default function ChatPage() {
   const isQuizMode = activeCap.value === "deep_question";
   const isVisualizeMode = activeCap.value === "visualize";
   const isResearchMode = activeCap.value === "deep_research";
+  const quizHasMimicPaper =
+    isQuizMode && quizConfig.mode === "mimic" && Boolean(quizPdf);
   const capabilityNeedsConfig = isQuizMode || isVisualizeMode || isResearchMode;
+
+  // HTML dashboards/reports should use the HTML viewer, not Chart.js.
+  useEffect(() => {
+    if (!isVisualizeMode || attachments.length === 0) return;
+    const hasHtml = attachments.some((a) => {
+      const name = (a.filename || "").toLowerCase();
+      const mime = (a.mimeType || "").toLowerCase();
+      return name.endsWith(".html") || name.endsWith(".htm") || mime.includes("html");
+    });
+    if (!hasHtml) return;
+    if (
+      visualizeConfig.render_mode === "chartjs" ||
+      visualizeConfig.render_mode === "svg" ||
+      visualizeConfig.render_mode === "mermaid"
+    ) {
+      setVisualizeConfig((prev) => ({ ...prev, render_mode: "html" }));
+      setCapabilityConfigConfirmed(false);
+    }
+  }, [attachments, isVisualizeMode, visualizeConfig.render_mode]);
 
   // Edit-invalidates-confirm wrappers — flipping any field after the user
   // hit *Confirm* should restore the gate so they re-confirm intentionally.
@@ -1491,7 +1512,8 @@ export default function ChatPage() {
           !selectedQuestionEntries.length &&
           !selectedSkills.length &&
           !skillsAutoMode &&
-          !selectedMemoryFiles.length) ||
+          !selectedMemoryFiles.length &&
+          !quizHasMimicPaper) ||
         state.isStreaming
       )
         return;
@@ -1528,6 +1550,7 @@ export default function ChatPage() {
       const memoryPayload = [...memoryReferencesPayload];
       const messageContent =
         content ||
+        (quizHasMimicPaper ? t("Please generate questions from the uploaded paper.") : "") ||
         (selectedNotebookRecords.length ||
         selectedBookReferences.length ||
         selectedHistorySessions.length ||
@@ -1580,6 +1603,7 @@ export default function ChatPage() {
       selectedQuestionEntries.length,
       selectedSkills,
       skillsAutoMode,
+      quizHasMimicPaper,
       sendMessage,
       shouldAutoScrollRef,
       state.isStreaming,
@@ -2059,6 +2083,7 @@ export default function ChatPage() {
               sessionId={state.sessionId}
               isStreaming={state.isStreaming}
               isVisualizeMode={isVisualizeMode}
+              allowEmptySend={quizHasMimicPaper}
               capabilityNeedsConfig={capabilityNeedsConfig}
               capabilityConfigConfirmed={capabilityConfigConfirmed}
               onRequestConfigConfirm={ensureActivityPanelOpen}

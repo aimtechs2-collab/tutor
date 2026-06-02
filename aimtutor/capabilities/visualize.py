@@ -59,15 +59,24 @@ class VisualizeCapability(BaseCapability):
 
     async def run(self, context: UnifiedContext, stream: StreamBus) -> None:
         from aimtutor.agents.visualize.pipeline import VisualizePipeline
+        from aimtutor.agents.visualize.models import ReviewResult, VisualizationAnalysis
         from aimtutor.agents.visualize.utils import (
             build_fallback_html,
+            extract_primary_html_attachment,
+            is_valid_chartjs_config,
             is_valid_html_document,
+            resolve_visualize_render_mode,
+            should_render_attached_html_directly,
         )
         from aimtutor.capabilities._answer_now import extract_answer_now_context
         from aimtutor.services.llm.config import get_llm_config
 
         request_config = validate_visualize_request_config(context.config_overrides)
-        render_mode = request_config.render_mode
+        render_mode = resolve_visualize_render_mode(
+            request_config.render_mode,
+            attachments=context.attachments,
+            user_message=context.user_message,
+        )
         i18n = StatusI18n(self.name, context.language)
 
         llm_config_for_usage = get_llm_config()
@@ -89,6 +98,34 @@ class VisualizeCapability(BaseCapability):
 
         llm_config = get_llm_config()
         history_context = str(context.metadata.get("conversation_context_text", "") or "").strip()
+
+        attached_html = extract_primary_html_attachment(context.attachments)
+        if (
+            render_mode == "html"
+            and attached_html
+            and should_render_attached_html_directly(context.user_message)
+        ):
+            await self._emit_text_visualization(
+                stream,
+                render_type="html",
+                final_code=attached_html,
+                analysis=VisualizationAnalysis(
+                    render_type="html",
+                    description="Attached HTML document",
+                    data_description="Rendered from the uploaded HTML file.",
+                    chart_type="interactive",
+                    visual_elements=[],
+                    rationale="User attached an HTML file and asked to visualize it.",
+                ),
+                review=ReviewResult(
+                    optimized_code=attached_html,
+                    changed=False,
+                    review_notes="Rendered uploaded HTML attachment directly.",
+                ),
+                usage=usage,
+                i18n=i18n,
+            )
+            return
 
         pipeline = VisualizePipeline(
             api_key=llm_config.api_key,
@@ -147,6 +184,7 @@ class VisualizeCapability(BaseCapability):
                 user_input=context.user_message,
                 history_context=history_context,
                 analysis=analysis,
+                attachments=context.attachments,
             )
             await stream.progress(
                 message=i18n.t("code_generated", "Code generated."),
@@ -161,8 +199,6 @@ class VisualizeCapability(BaseCapability):
                 # 30-60s on a 10k-token document with negligible quality gain.
                 # Instead, do a local sanity check and fall back to a minimal
                 # template if the model returned something unrenderable.
-                from aimtutor.agents.visualize.models import ReviewResult
-
                 if is_valid_html_document(code):
                     final_code = code
                     review = ReviewResult(
@@ -207,8 +243,30 @@ class VisualizeCapability(BaseCapability):
                     user_input=context.user_message,
                     analysis=analysis,
                     code=code,
+                    attachments=context.attachments,
                 )
                 final_code = review.optimized_code
+                if analysis.render_type == "chartjs" and not is_valid_chartjs_config(
+                    final_code
+                ):
+                    if attached_html and is_valid_html_document(attached_html):
+                        final_code = attached_html
+                        analysis.render_type = "html"  # type: ignore[assignment]
+                        review = ReviewResult(
+                            optimized_code=final_code,
+                            changed=True,
+                            review_notes=(
+                                "Chart.js config was invalid; rendered the attached HTML file instead."
+                            ),
+                        )
+                        await stream.progress(
+                            message=i18n.t(
+                                "chartjs_fallback_html",
+                                "Chart config was invalid; showing the attached HTML page instead.",
+                            ),
+                            source=self.name,
+                            stage="reviewing",
+                        )
                 if review.changed:
                     await stream.progress(
                         message=i18n.t(
@@ -229,24 +287,42 @@ class VisualizeCapability(BaseCapability):
                         stage="reviewing",
                     )
 
-        # Emit final content as a fenced code block for the chat area
-        if analysis.render_type == "svg":
+        await self._emit_text_visualization(
+            stream,
+            render_type=analysis.render_type,
+            final_code=final_code,
+            analysis=analysis,
+            review=review,
+            usage=usage,
+            i18n=i18n,
+        )
+
+    async def _emit_text_visualization(
+        self,
+        stream: StreamBus,
+        *,
+        render_type: str,
+        final_code: str,
+        analysis: Any,
+        review: Any,
+        usage: UsageTracker | None,
+        i18n: StatusI18n,
+    ) -> None:
+        if render_type == "svg":
             lang_tag = "svg"
-        elif analysis.render_type == "mermaid":
+        elif render_type == "mermaid":
             lang_tag = "mermaid"
-        elif analysis.render_type == "html":
+        elif render_type == "html":
             lang_tag = "html"
         else:
             lang_tag = "javascript"
         content_md = f"```{lang_tag}\n{final_code}\n```"
         await stream.content(content_md, source=self.name, stage="reviewing")
-
-        # Structured result for the frontend viewer
         await emit_capability_result(
             stream,
             {
                 "response": content_md,
-                "render_type": analysis.render_type,
+                "render_type": render_type,
                 "code": {
                     "language": lang_tag,
                     "content": final_code,

@@ -1,4 +1,5 @@
 import { apiFetch, apiUrl } from "@/lib/api";
+import { isPublicAuthPath, sanitizePostAuthRedirect } from "@/lib/auth-routes";
 import { invalidateClientCache, withClientCache } from "@/lib/client-cache";
 import type { LLMSelection, StreamEvent } from "@/lib/unified-ws";
 
@@ -112,9 +113,20 @@ export interface QuizResultItem {
 
 async function expectJson<T>(response: Response): Promise<T> {
   if (response.status === 401 && typeof window !== "undefined") {
-    const next = encodeURIComponent(window.location.pathname);
-    window.location.href = `/login?next=${next}`;
-    return new Promise(() => {});
+    if (!isPublicAuthPath(window.location.pathname)) {
+      const next = encodeURIComponent(
+        sanitizePostAuthRedirect(
+          `${window.location.pathname}${window.location.search}`,
+        ),
+      );
+      const clerkEnabled =
+        process.env.NEXT_PUBLIC_AUTH_PROVIDER === "clerk" &&
+        Boolean(process.env.NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY);
+      window.location.href = clerkEnabled
+        ? `/sign-in?redirect_url=${next}`
+        : `/login?next=${next}`;
+      return new Promise(() => {});
+    }
   }
   if (!response.ok) {
     throw new Error(`Request failed: ${response.status}`);

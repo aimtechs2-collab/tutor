@@ -21,6 +21,7 @@
   },
   "dependencies": {
     "@clerk/nextjs": "^7.4.2",
+    "@clerk/themes": "^2.4.57",
     "chart.js": "^4.5.1",
     "clsx": "^2.1.1",
     "cytoscape": "^3.33.1",

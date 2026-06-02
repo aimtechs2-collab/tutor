@@ -1255,7 +1255,12 @@ class QuestionPipeline:
             }
             for qa_pair in qa_pairs
         ]
-        successful = sum(1 for qa in qa_pairs if not qa.metadata.get("error"))
+        successful = sum(
+            1
+            for qa in qa_pairs
+            if not qa.metadata.get("error")
+            and not str(qa.question or "").startswith("[Generation failed]")
+        )
         markdown = self._render_summary_markdown(qa_pairs)
         finish_block = finish_text.strip()
         if finish_block:
@@ -1293,21 +1298,43 @@ class QuestionPipeline:
         text = (raw or "").strip()
         if not text:
             return {}
-        # Strip a single fenced block if the model wrapped the JSON
-        fence = re.search(r"```(?:json)?\s*(.*?)```", text, re.DOTALL)
-        if fence:
-            text = fence.group(1).strip()
+        # Repair steps may emit raw JSON; quiz loops use ``FINISH`` + body.
+        if text.upper().startswith("FINISH"):
+            text = re.sub(r"^FINISH\s*", "", text, count=1, flags=re.IGNORECASE).strip()
         try:
             parsed = json.loads(text)
+            if isinstance(parsed, dict):
+                return parsed
         except json.JSONDecodeError:
-            obj = re.search(r"\{[\s\S]*\}", text)
-            if obj is None:
-                return {}
+            pass
+        # Only unwrap an *outer* code fence. Do not scan for arbitrary
+        # ``` pairs inside the text — choice stems often embed
+        # ```javascript``` blocks and a greedy inner match would
+        # truncate the JSON before options/correct_answer.
+        if text.startswith("```"):
+            fence = re.match(r"^```(?:json)?\s*(.*)\s*```\s*$", text, re.DOTALL)
+            if fence:
+                text = fence.group(1).strip()
+                try:
+                    parsed = json.loads(text)
+                    if isinstance(parsed, dict):
+                        return parsed
+                except json.JSONDecodeError:
+                    pass
+        # Decode the first JSON object starting at ``{``. Do NOT use a
+        # greedy ``\{[\s\S]*\}`` fallback — choice questions often embed
+        # JavaScript code blocks containing ``}``, which truncates the
+        # payload and drops options/correct_answer (surfacing as
+        # "[Generation failed]" in the UI).
+        start = text.find("{")
+        if start >= 0:
             try:
-                parsed = json.loads(obj.group(0))
+                parsed, _end = json.JSONDecoder().raw_decode(text[start:])
+                if isinstance(parsed, dict):
+                    return parsed
             except json.JSONDecodeError:
-                return {}
-        return parsed if isinstance(parsed, dict) else {}
+                pass
+        return {}
 
     @classmethod
     def _normalize_quiz_payload(
@@ -1401,6 +1428,10 @@ class QuestionPipeline:
         question = str(payload.get("question") or "").strip()
         if not question:
             question = f"[Generation failed] {template.topic}"
+        meta: dict[str, Any] = {}
+        if issues:
+            meta["issues"] = issues
+            meta["error"] = True
         return QuizPair(
             question_id=template.question_id,
             question=question,
@@ -1410,7 +1441,7 @@ class QuestionPipeline:
             options=payload.get("options") if isinstance(payload.get("options"), dict) else None,
             topic=template.topic,
             difficulty=template.difficulty,
-            metadata={"issues": issues} if issues else {},
+            metadata=meta,
         )
 
     # ------------------------------------------------------------------

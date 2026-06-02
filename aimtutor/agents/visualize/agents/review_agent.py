@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 
 from aimtutor.agents.base_agent import BaseAgent
+from aimtutor.core.context import Attachment
 from aimtutor.core.trace import build_trace_metadata, new_call_id
 
 from ..models import ReviewResult, VisualizationAnalysis
@@ -34,6 +35,7 @@ class ReviewAgent(BaseAgent):
         user_input: str,
         analysis: VisualizationAnalysis,
         code: str,
+        attachments: list[Attachment] | None = None,
     ) -> ReviewResult:
         # HTML pages are 8-16k tokens of full single-file documents; a second
         # LLM pass to "review" them costs another 30-60s with negligible
@@ -63,6 +65,7 @@ class ReviewAgent(BaseAgent):
             system_prompt=system_prompt,
             response_format={"type": "json_object"},
             stage="reviewing",
+            attachments=attachments,
             trace_meta=build_trace_metadata(
                 call_id=new_call_id("viz-review"),
                 phase="reviewing",

@@ -106,6 +106,7 @@ export default memo(function ChatComposer({
   sessionId,
   isStreaming,
   isVisualizeMode,
+  allowEmptySend = false,
   capabilityNeedsConfig,
   capabilityConfigConfirmed,
   onRequestConfigConfirm,
@@ -183,6 +184,12 @@ export default memo(function ChatComposer({
   isStreaming: boolean;
   isVisualizeMode: boolean;
   /**
+   * Capability-specific signal that there is sendable input even when the
+   * composer text and inline chips are empty (e.g. Quiz mimic paper chosen
+   * in the config panel).
+   */
+  allowEmptySend?: boolean;
+  /**
    * True when the active capability (e.g. Quiz / Visualize / Research)
    * requires explicit configuration before sending. When true, `canSend`
    * is gated on `capabilityConfigConfirmed`.
@@ -245,6 +252,33 @@ export default memo(function ChatComposer({
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const inputHandleRef = useRef<ComposerInputHandle>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
+  // Smooth out brief backend stream-state flaps near turn boundaries so the
+  // stop/send control does not flicker while solve mode is still "thinking".
+  const STREAMING_UI_HOLD_MS = 1400;
+  const [showStreamingControls, setShowStreamingControls] =
+    useState(isStreaming);
+  const streamingUiTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  useEffect(() => {
+    if (streamingUiTimerRef.current) {
+      clearTimeout(streamingUiTimerRef.current);
+      streamingUiTimerRef.current = null;
+    }
+    if (isStreaming) {
+      setShowStreamingControls(true);
+      return;
+    }
+    streamingUiTimerRef.current = setTimeout(() => {
+      setShowStreamingControls(false);
+      streamingUiTimerRef.current = null;
+    }, STREAMING_UI_HOLD_MS);
+    return () => {
+      if (streamingUiTimerRef.current) {
+        clearTimeout(streamingUiTimerRef.current);
+        streamingUiTimerRef.current = null;
+      }
+    };
+  }, [isStreaming]);
 
   useEffect(() => {
     if (!prefillInputRef) return;
@@ -262,16 +296,27 @@ export default memo(function ChatComposer({
   // composer itself and flip those labels to icon-only below the
   // threshold. Count-badges stay visible so users still see how many
   // things are selected.
+  //
+  // Use hysteresis (different enter/exit thresholds) to avoid a jitter loop
+  // near the breakpoint where minor width changes would repeatedly toggle
+  // compact <-> expanded and visually "fluctuate" the composer row.
+  const COMPOSER_COMPACT_ENTER_PX = 620;
+  const COMPOSER_COMPACT_EXIT_PX = 660;
   const [composerCompact, setComposerCompact] = useState(false);
   useEffect(() => {
     const el = composerRef.current;
     if (!el || typeof ResizeObserver === "undefined") return;
-    setComposerCompact(el.getBoundingClientRect().width < 620);
+    const applyCompact = (width: number) => {
+      setComposerCompact((prev) =>
+        prev
+          ? width < COMPOSER_COMPACT_EXIT_PX
+          : width < COMPOSER_COMPACT_ENTER_PX,
+      );
+    };
+    applyCompact(el.getBoundingClientRect().width);
     const observer = new ResizeObserver(() => {
       if (composerRef.current) {
-        setComposerCompact(
-          composerRef.current.getBoundingClientRect().width < 620,
-        );
+        applyCompact(composerRef.current.getBoundingClientRect().width);
       }
     });
     observer.observe(el);
@@ -321,7 +366,8 @@ export default memo(function ChatComposer({
     !!selectedQuestionEntries.length ||
     !!selectedSkills.length ||
     skillsAutoMode ||
-    !!selectedMemoryFiles.length;
+    !!selectedMemoryFiles.length ||
+    allowEmptySend;
 
   // `capabilityNeedsConfig && !capabilityConfigConfirmed` blocks send so the
   // user has to click *Confirm* in the right-side Activity panel first.
@@ -329,7 +375,7 @@ export default memo(function ChatComposer({
   // (via `onRequestConfigConfirm`) instead of silently doing nothing.
   const isConfigBlocked = capabilityNeedsConfig && !capabilityConfigConfirmed;
   const canSend =
-    (hasContent || hasReferences) && !isStreaming && !isConfigBlocked;
+    (hasContent || hasReferences) && !showStreamingControls && !isConfigBlocked;
 
   const skillsCount = skillsAutoMode ? 1 : selectedSkills.length;
   const spaceSelectionCounts: SpaceSelectionCounts = {
@@ -794,25 +840,38 @@ export default memo(function ChatComposer({
                   open={liveVoiceOpen}
                   onOpenChange={onLiveVoiceOpenChange}
                 />
-                {isStreaming ? (
-                  <button
-                    type="button"
-                    onClick={onCancelStreaming}
-                    className="group relative inline-flex h-[29px] w-[29px] shrink-0 items-center justify-center rounded-full bg-[var(--primary)] text-[var(--primary-foreground)] shadow-[0_4px_12px_color-mix(in_srgb,var(--primary)_18%,transparent)] transition-[background-color,box-shadow] hover:bg-[var(--primary)]/90 hover:shadow-[0_6px_16px_color-mix(in_srgb,var(--primary)_28%,transparent)]"
-                    aria-label={t("Stop generating")}
-                    title={t("Stop generating")}
-                  >
-                    {/* A faint ring slowly rotates around the rim while
-                        streaming, signalling "still working — click to
-                        cancel". The white square sits front-and-center so
-                        the click target is always obvious. */}
-                    <span className="pointer-events-none absolute inset-0 rounded-full border-[1.5px] border-white/30 border-t-white/85 animate-spin opacity-90 transition-opacity group-hover:opacity-40" />
-                    <Square
-                      size={9}
-                      strokeWidth={2.6}
-                      className="relative z-10 fill-current"
-                    />
-                  </button>
+                {showStreamingControls ? (
+                  isStreaming ? (
+                    <button
+                      type="button"
+                      onClick={onCancelStreaming}
+                      className="group relative inline-flex h-[29px] w-[29px] shrink-0 items-center justify-center rounded-full bg-[var(--primary)] text-[var(--primary-foreground)] shadow-[0_4px_12px_color-mix(in_srgb,var(--primary)_18%,transparent)] transition-[background-color,box-shadow] hover:bg-[var(--primary)]/90 hover:shadow-[0_6px_16px_color-mix(in_srgb,var(--primary)_28%,transparent)]"
+                      aria-label={t("Stop generating")}
+                      title={t("Stop generating")}
+                    >
+                      {/* A faint ring slowly rotates around the rim while
+                          streaming, signalling "still working — click to
+                          cancel". The white square sits front-and-center so
+                          the click target is always obvious. */}
+                      <span className="pointer-events-none absolute inset-0 rounded-full border-[1.5px] border-white/30 border-t-white/85 animate-spin opacity-90 transition-opacity group-hover:opacity-40" />
+                      <Square
+                        size={9}
+                        strokeWidth={2.6}
+                        className="relative z-10 fill-current"
+                      />
+                    </button>
+                  ) : (
+                    <button
+                      type="button"
+                      disabled
+                      className="relative inline-flex h-[29px] w-[29px] shrink-0 items-center justify-center rounded-full bg-[var(--primary)]/65 text-[var(--primary-foreground)] shadow-[0_4px_12px_color-mix(in_srgb,var(--primary)_12%,transparent)]"
+                      aria-label={t("Thinking")}
+                      title={t("Thinking...")}
+                    >
+                      <span className="pointer-events-none absolute inset-0 rounded-full border-[1.5px] border-white/25 border-t-white/85 animate-spin" />
+                      <span className="relative z-10 h-1.5 w-1.5 rounded-full bg-current opacity-95" />
+                    </button>
+                  )
                 ) : (
                   // When the active capability needs an unconfirmed config,
                   // we keep the button clickable (so a click can surface
@@ -824,7 +883,7 @@ export default memo(function ChatComposer({
                   <button
                     type="button"
                     onClick={handleManualSend}
-                    disabled={!(hasContent || hasReferences) || isStreaming}
+                    disabled={!(hasContent || hasReferences) || showStreamingControls}
                     title={
                       isConfigBlocked
                         ? t("Confirm settings on the right to send.")

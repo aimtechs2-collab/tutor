@@ -65,11 +65,13 @@ class VisualizePipeline:
         user_input: str,
         history_context: str,
         analysis: VisualizationAnalysis,
+        attachments: list[Attachment] | None = None,
     ) -> str:
         return await self.code_agent.process(
             user_input=user_input,
             history_context=history_context,
             analysis=analysis,
+            attachments=attachments,
         )
 
     async def run_review(
@@ -78,11 +80,13 @@ class VisualizePipeline:
         user_input: str,
         analysis: VisualizationAnalysis,
         code: str,
+        attachments: list[Attachment] | None = None,
     ) -> ReviewResult:
         return await self.review_agent.process(
             user_input=user_input,
             analysis=analysis,
             code=code,
+            attachments=attachments,
         )
 
 

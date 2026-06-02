@@ -1,5 +1,7 @@
 // API configuration and utility functions
 
+import { isPublicAuthPath, sanitizePostAuthRedirect } from "@/lib/auth-routes";
+
 // The Docker image and the `aimtutor start` launcher both build the Next.js
 // bundle with this literal placeholder and substitute it at container/process
 // start. If a deployment serves bundles where the substitution silently
@@ -229,12 +231,29 @@ export async function apiFetch(
     headers: mergeHeaders(init?.headers, authHeaders),
   });
 
+  const requestUrl =
+    typeof input === "string"
+      ? input
+      : input instanceof URL
+        ? input.href
+        : input.url;
+
+  const skipAuthRedirect =
+    requestUrl.includes("/api/v1/auth/status") ||
+    requestUrl.includes("/api/v1/presence/ping");
+
   if (
     res.status === 401 &&
     (AUTH_ENABLED || CLERK_ENABLED) &&
-    typeof window !== "undefined"
+    typeof window !== "undefined" &&
+    !isPublicAuthPath(window.location.pathname) &&
+    !skipAuthRedirect
   ) {
-    const next = encodeURIComponent(window.location.pathname);
+    const next = encodeURIComponent(
+      sanitizePostAuthRedirect(
+        `${window.location.pathname}${window.location.search}`,
+      ),
+    );
     window.location.href = CLERK_ENABLED
       ? `/sign-in?redirect_url=${next}`
       : `/login?next=${next}`;

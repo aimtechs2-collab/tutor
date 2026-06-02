@@ -639,6 +639,10 @@ def start(home: str | Path | None = None) -> None:
         pkg_root = Path(_aimtutor_pkg.__file__).resolve().parent.parent
         if pkg_root.resolve() == runtime_home.resolve():
             backend_cmd.append("--reload")
+            # Limit watch scope to backend source code only. This prevents
+            # runtime artifact writes under data/user/... (e.g. deep_solve
+            # code_runs) from triggering API reload and dropping websocket chats.
+            backend_cmd.extend(["--reload-dir", str(runtime_home / "aimtutor")])
             py_path = common_env.get("PYTHONPATH", "")
             common_env["PYTHONPATH"] = (
                 str(runtime_home)
