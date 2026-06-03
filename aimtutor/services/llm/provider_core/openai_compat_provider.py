@@ -268,6 +268,8 @@ class OpenAICompatProvider(LLMProvider):
         for key, value in extra_kwargs.items():
             if value is None:
                 continue
+            if key in ("on_content_delta", "on_reasoning_delta"):
+                continue
             if key == "temperature" and not supports_temperature(model_name, reasoning_effort):
                 continue
             request_kwargs[key] = value

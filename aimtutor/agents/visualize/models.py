@@ -2,9 +2,10 @@
 
 from __future__ import annotations
 
-from typing import Literal
+import json
+from typing import Any, Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 
 class VisualizationAnalysis(BaseModel):
@@ -65,3 +66,13 @@ class ReviewResult(BaseModel):
         default="",
         description="Notes on what was checked or changed.",
     )
+
+    @field_validator("optimized_code", mode="before")
+    @classmethod
+    def coerce_optimized_code(cls, value: Any) -> str:
+        # Review LLM often returns Chart.js config as a nested JSON object.
+        if isinstance(value, dict):
+            return json.dumps(value, ensure_ascii=False, indent=2)
+        if value is None:
+            return ""
+        return str(value)

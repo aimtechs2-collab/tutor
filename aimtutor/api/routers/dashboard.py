@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import time
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
@@ -14,15 +15,31 @@ from aimtutor.services.session import get_session_store
 
 router = APIRouter()
 
+# Voice trace scan is filesystem-heavy; cache briefly so /stats and /overview
+# do not re-walk JSONL on every dashboard visit.
+_voice_sessions_cache: tuple[float, list[dict[str, Any]]] = (0.0, [])
+_VOICE_CACHE_TTL_SEC = 45.0
+
+# One session list powers stats + recent; 200 covers typical accounts without
+# the old 500-row query cost (multiple subqueries per row).
+_DASHBOARD_SESSION_LIMIT = 200
+
 
 # ── helpers ───────────────────────────────────────────────────────────────
 
 def _read_voice_sessions(limit_files: int = 30) -> list[dict[str, Any]]:
-    """Read voice session records from L1 JSONL traces."""
+    """Read voice session records from L1 JSONL traces (short-lived cache)."""
+    global _voice_sessions_cache
+    now = time.monotonic()
+    cached_at, cached = _voice_sessions_cache
+    if cached and (now - cached_at) < _VOICE_CACHE_TTL_SEC:
+        return cached
+
     voice: list[dict[str, Any]] = []
     try:
         trace_dir = memory_root() / "trace" / "chat"
         if not trace_dir.exists():
+            _voice_sessions_cache = (now, voice)
             return voice
         for f in sorted(trace_dir.glob("*.jsonl"))[-limit_files:]:
             with open(f, encoding="utf-8") as fh:
@@ -35,25 +52,29 @@ def _read_voice_sessions(limit_files: int = 30) -> list[dict[str, Any]]:
                         continue
     except Exception:
         pass
+    _voice_sessions_cache = (now, voice)
     return voice
 
 
-# ── endpoints ─────────────────────────────────────────────────────────────
+def _memory_snapshot() -> dict[str, str]:
+    snapshot: dict[str, str] = {}
+    try:
+        l2_dir = memory_root() / "L2"
+        if l2_dir.exists():
+            for md_file in l2_dir.glob("*.md"):
+                snapshot[md_file.stem] = md_file.read_text(encoding="utf-8")[:2000]
+    except Exception:
+        pass
+    return snapshot
 
-@router.get("/stats")
-async def get_dashboard_stats(_payload: Any = Depends(require_auth)) -> dict[str, Any]:
-    """Aggregate stats for the current user's dashboard."""
-    store = get_session_store()
-    sessions = await store.list_sessions(limit=500, offset=0)
 
-    total_sessions = len(sessions)
+def _stats_from_sessions(sessions: list[dict[str, Any]]) -> dict[str, Any]:
     quiz_sessions = [
         s for s in sessions if s.get("capability") in ("question", "quiz")
     ]
     voice_sessions = _read_voice_sessions()
     voice_minutes = sum(v.get("duration_seconds", 0) for v in voice_sessions) / 60
 
-    # Streak: count consecutive days with activity
     today = datetime.now(timezone.utc).date()
     active_dates = sorted(
         {
@@ -70,7 +91,6 @@ async def get_dashboard_stats(_payload: Any = Depends(require_auth)) -> dict[str
         else:
             break
 
-    # 7-day activity breakdown
     seven_days: dict[str, dict[str, int]] = {
         (today - timedelta(days=6 - i)).isoformat(): {
             "chat": 0, "quiz": 0, "voice": 0, "research": 0, "other": 0,
@@ -103,58 +123,38 @@ async def get_dashboard_stats(_payload: Any = Depends(require_auth)) -> dict[str
         except Exception:
             pass
 
-    last_active_ts = max(
-        (s.get("updated_at", 0) for s in sessions), default=0
-    )
+    last_active_ts = max((s.get("updated_at", 0) for s in sessions), default=0)
 
     return {
-        "total_sessions": total_sessions,
+        "total_sessions": len(sessions),
         "quiz_sessions": len(quiz_sessions),
         "voice_minutes": round(voice_minutes, 1),
         "streak_days": streak,
         "last_active": (
             datetime.fromtimestamp(last_active_ts, tz=timezone.utc).isoformat()
-            if last_active_ts else None
+            if last_active_ts
+            else None
         ),
         "seven_day_activity": seven_days,
     }
 
 
-@router.get("/memory-snapshot")
-async def get_memory_snapshot(
-    _payload: Any = Depends(require_auth),
-) -> dict[str, str]:
-    """Return L2 memory summaries for the current user."""
-    snapshot: dict[str, str] = {}
-    try:
-        l2_dir = memory_root() / "L2"
-        if l2_dir.exists():
-            for md_file in l2_dir.glob("*.md"):
-                snapshot[md_file.stem] = md_file.read_text(encoding="utf-8")[:2000]
-    except Exception:
-        pass
-    return snapshot
-
-
-@router.get("/recent")
-async def get_recent_activities(
-    limit: int = 50,
-    type: str | None = None,
+def _activities_from_sessions(
+    sessions: list[dict[str, Any]],
+    *,
+    limit: int,
+    activity_type: str | None = None,
 ) -> list[dict[str, Any]]:
-    """Recent sessions — public within the app (auth handled by dependency at router level)."""
-    store = get_session_store()
-    sessions = await store.list_sessions(limit=limit, offset=0)
     activities: list[dict[str, Any]] = []
-
     for session in sessions:
         capability = str(session.get("capability") or "chat")
-        activity_type = capability.replace("deep_", "")
-        if type is not None and activity_type != type:
+        row_type = capability.replace("deep_", "")
+        if activity_type is not None and row_type != activity_type:
             continue
         activities.append(
             {
                 "id": session.get("session_id"),
-                "type": activity_type,
+                "type": row_type,
                 "capability": capability,
                 "title": session.get("title", "Untitled"),
                 "timestamp": session.get("updated_at", session.get("created_at", 0)),
@@ -165,8 +165,59 @@ async def get_recent_activities(
                 "active_turn_id": session.get("active_turn_id"),
             }
         )
+        if len(activities) >= limit:
+            break
+    return activities
 
-    return activities[:limit]
+
+# ── endpoints ─────────────────────────────────────────────────────────────
+
+@router.get("/overview")
+async def get_dashboard_overview(
+    _payload: Any = Depends(require_auth),
+    activity_limit: int = 40,
+) -> dict[str, Any]:
+    """Single round-trip payload for the dashboard (stats + recent + memory)."""
+    store = get_session_store()
+    sessions = await store.list_sessions(
+        limit=_DASHBOARD_SESSION_LIMIT, offset=0
+    )
+    return {
+        "stats": _stats_from_sessions(sessions),
+        "activities": _activities_from_sessions(
+            sessions, limit=min(activity_limit, 50)
+        ),
+        "memory": _memory_snapshot(),
+    }
+
+
+@router.get("/stats")
+async def get_dashboard_stats(_payload: Any = Depends(require_auth)) -> dict[str, Any]:
+    """Aggregate stats for the current user's dashboard."""
+    store = get_session_store()
+    sessions = await store.list_sessions(
+        limit=_DASHBOARD_SESSION_LIMIT, offset=0
+    )
+    return _stats_from_sessions(sessions)
+
+
+@router.get("/memory-snapshot")
+async def get_memory_snapshot(
+    _payload: Any = Depends(require_auth),
+) -> dict[str, str]:
+    """Return L2 memory summaries for the current user."""
+    return _memory_snapshot()
+
+
+@router.get("/recent")
+async def get_recent_activities(
+    limit: int = 50,
+    type: str | None = None,
+) -> list[dict[str, Any]]:
+    """Recent sessions — public within the app (auth handled by dependency at router level)."""
+    store = get_session_store()
+    sessions = await store.list_sessions(limit=limit, offset=0)
+    return _activities_from_sessions(sessions, limit=limit, activity_type=type)
 
 
 @router.get("/{entry_id}")

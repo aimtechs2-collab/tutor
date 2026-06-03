@@ -35,7 +35,10 @@ import {
   extractQuizQuestions,
   extractStreamingQuizQuestions,
 } from "@/lib/quiz-types";
-import { extractVisualizeResult } from "@/lib/visualize-types";
+import {
+  extractVisualizeResult,
+  extractVisualizeResultFromContent,
+} from "@/lib/visualize-types";
 import type { StreamEvent } from "@/lib/unified-ws";
 import { hasVisibleMarkdownContent } from "@/lib/markdown-display";
 import type { SelectedBookReference } from "@/lib/book-references";
@@ -192,9 +195,13 @@ const AssistantMessage = memo(function AssistantMessage({
   }, [msg.capability, resultEvent]);
 
   const visualizeResult = useMemo(() => {
-    if (msg.capability !== "visualize" || !resultEvent) return null;
-    return extractVisualizeResult(resultEvent.metadata);
-  }, [msg.capability, resultEvent]);
+    if (msg.capability !== "visualize") return null;
+    if (resultEvent) {
+      const fromResult = extractVisualizeResult(resultEvent.metadata);
+      if (fromResult) return fromResult;
+    }
+    return extractVisualizeResultFromContent(msg.content);
+  }, [msg.capability, msg.content, resultEvent]);
 
   // Detect the ``ask_user`` terminator payload: when the assistant turn
   // ended via the ``ask_user`` tool, this is the question the user is

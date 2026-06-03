@@ -36,6 +36,13 @@ system: |
       * Always check that an element exists before manipulating it.
     Within these constraints, freely choose layout, colors, visual style, and
     interaction patterns to make the page clear, beautiful, and easy to learn from.
+    If the analysis indicates animation / walkthrough (including Manim-video
+    fallbacks), the HTML MUST include explicit interactive controls:
+      * Play/Pause button
+      * Next/Previous step controls
+      * Restart control
+      * A visible step/progress indicator
+    Static-only HTML pages are not acceptable for animation requests.
   - Do NOT include any explanation outside the code fence.
   - Wrap the code in a fenced code block with the appropriate language tag
     (```svg, ```javascript, ```mermaid, or ```html).

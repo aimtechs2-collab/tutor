@@ -247,6 +247,8 @@ class AgentLoop:
         self,
         initial_messages: list[dict],
         on_progress: Callable[..., Awaitable[None]] | None = None,
+        on_content_delta: Callable[[str], Awaitable[None]] | None = None,
+        on_stream_pause: Callable[[], Awaitable[None]] | None = None,
     ) -> tuple[str | None, list[str], list[dict]]:
         """Run the agent iteration loop."""
         messages = initial_messages
@@ -263,9 +265,12 @@ class AgentLoop:
                 messages=messages,
                 tools=tool_defs,
                 model=self.model,
+                on_content_delta=on_content_delta,
             )
 
             if response.has_tool_calls:
+                if on_stream_pause:
+                    await on_stream_pause()
                 if on_progress:
                     thought = self._strip_think(response.content)
                     if thought:
@@ -439,6 +444,8 @@ class AgentLoop:
         msg: InboundMessage,
         session_key: str | None = None,
         on_progress: Callable[[str], Awaitable[None]] | None = None,
+        on_content_delta: Callable[[str], Awaitable[None]] | None = None,
+        on_stream_pause: Callable[[], Awaitable[None]] | None = None,
     ) -> OutboundMessage | None:
         """Process a single inbound message and return the response."""
         # System messages: parse origin from chat_id ("channel:chat_id")
@@ -712,6 +719,8 @@ class AgentLoop:
         final_content, _, all_msgs = await self._run_agent_loop(
             initial_messages,
             on_progress=on_progress or _bus_progress,
+            on_content_delta=on_content_delta,
+            on_stream_pause=on_stream_pause,
         )
 
         if final_content is None:
@@ -785,11 +794,17 @@ class AgentLoop:
         channel: str = "cli",
         chat_id: str = "direct",
         on_progress: Callable[[str], Awaitable[None]] | None = None,
+        on_content_delta: Callable[[str], Awaitable[None]] | None = None,
+        on_stream_pause: Callable[[], Awaitable[None]] | None = None,
     ) -> str:
         """Process a message directly (for CLI or cron usage)."""
         await self._connect_mcp()
         msg = InboundMessage(channel=channel, sender_id="user", chat_id=chat_id, content=content)
         response = await self._process_message(
-            msg, session_key=session_key, on_progress=on_progress
+            msg,
+            session_key=session_key,
+            on_progress=on_progress,
+            on_content_delta=on_content_delta,
+            on_stream_pause=on_stream_pause,
         )
         return response.content if response else ""

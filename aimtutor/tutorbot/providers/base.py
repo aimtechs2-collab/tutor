@@ -4,7 +4,7 @@ from abc import ABC, abstractmethod
 import asyncio
 from dataclasses import dataclass, field
 import json
-from typing import Any
+from typing import Any, Awaitable, Callable
 
 from loguru import logger
 
@@ -247,6 +247,7 @@ class LLMProvider(ABC):
         temperature: object = _SENTINEL,
         reasoning_effort: object = _SENTINEL,
         tool_choice: str | dict[str, Any] | None = None,
+        on_content_delta: Callable[[str], Awaitable[None]] | None = None,
     ) -> LLMResponse:
         """Call chat() with retry on transient provider failures.
 
@@ -269,9 +270,9 @@ class LLMProvider(ABC):
             else None
         )
 
-        for attempt, delay in enumerate(self._CHAT_RETRY_DELAYS, start=1):
-            try:
-                response = await self.chat(
+        async def _invoke() -> LLMResponse:
+            if on_content_delta is not None and hasattr(self, "chat_stream"):
+                return await self.chat_stream(
                     messages=messages,
                     tools=tools,
                     model=model,
@@ -279,7 +280,21 @@ class LLMProvider(ABC):
                     temperature=resolved_temperature,
                     reasoning_effort=resolved_reasoning_effort,
                     tool_choice=tool_choice,
+                    on_content_delta=on_content_delta,
                 )
+            return await self.chat(
+                messages=messages,
+                tools=tools,
+                model=model,
+                max_tokens=resolved_max_tokens,
+                temperature=resolved_temperature,
+                reasoning_effort=resolved_reasoning_effort,
+                tool_choice=tool_choice,
+            )
+
+        for attempt, delay in enumerate(self._CHAT_RETRY_DELAYS, start=1):
+            try:
+                response = await _invoke()
             except asyncio.CancelledError:
                 raise
             except Exception as exc:
@@ -304,15 +319,7 @@ class LLMProvider(ABC):
             await asyncio.sleep(delay)
 
         try:
-            return await self.chat(
-                messages=messages,
-                tools=tools,
-                model=model,
-                max_tokens=resolved_max_tokens,
-                temperature=resolved_temperature,
-                reasoning_effort=resolved_reasoning_effort,
-                tool_choice=tool_choice,
-            )
+            return await _invoke()
         except asyncio.CancelledError:
             raise
         except Exception as exc:

@@ -1187,6 +1187,7 @@ function BotsTab({
                 allowSystemDefault
                 helperText={t("Applies to this TutorBot")}
                 placement="bottom"
+                align="start"
                 onChange={setFormLLMSelection}
               />
               <p className="mt-1 text-[11px] text-[var(--muted-foreground)]/60">
@@ -1275,6 +1276,7 @@ function BotsTab({
                   allowSystemDefault
                   helperText={t("Applies to this TutorBot")}
                   placement="bottom"
+                  align="end"
                   onChange={(selection) =>
                     updateBotModel(bot.bot_id, selection)
                   }

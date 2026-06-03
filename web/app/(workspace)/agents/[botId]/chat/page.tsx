@@ -4,7 +4,8 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import dynamic from "next/dynamic";
 import { useParams, useRouter } from "next/navigation";
 import { useTranslation } from "react-i18next";
-import { ArrowLeft, Bot, Loader2, Send } from "lucide-react";
+import { ArrowLeft, Bot, Send, Square } from "lucide-react";
+import { BotStreamThinking } from "@/components/agents/BotStreamThinking";
 import { apiFetch, apiUrl, wsUrl } from "@/lib/api";
 import { firstParam } from "@/lib/route-params";
 import AssistantResponse from "@/components/common/AssistantResponse";
@@ -46,8 +47,17 @@ export default function BotChatPage() {
   const [bot, setBot] = useState<BotInfo | null>(null);
   const [messages, setMessages] = useState<ChatMsg[]>([]);
   const [streaming, setStreaming] = useState(false);
+  const [streamDraft, setStreamDraft] = useState("");
+  const [streamPaused, setStreamPaused] = useState(false);
   const [thinking, setThinking] = useState<string[]>([]);
   const thinkingRef = useRef<string[]>([]);
+  const streamDraftRef = useRef("");
+  const renderDraftRef = useRef("");
+  const renderQueueRef = useRef("");
+  const renderPumpRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const streamChunkBufferRef = useRef("");
+  const streamFlushRafRef = useRef<number | null>(null);
+  const pauseTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const wsRef = useRef<WebSocket | null>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
@@ -115,6 +125,84 @@ export default function BotChatPage() {
     });
   }, []);
 
+  const clearPauseTimer = useCallback(() => {
+    if (pauseTimerRef.current) {
+      clearTimeout(pauseTimerRef.current);
+      pauseTimerRef.current = null;
+    }
+  }, []);
+
+  const stopRenderPump = useCallback(() => {
+    if (renderPumpRef.current) {
+      clearInterval(renderPumpRef.current);
+      renderPumpRef.current = null;
+    }
+  }, []);
+
+  const flushRenderToFull = useCallback(() => {
+    stopRenderPump();
+    renderQueueRef.current = "";
+    renderDraftRef.current = streamDraftRef.current;
+    setStreamDraft(renderDraftRef.current);
+  }, [stopRenderPump]);
+
+  const ensureRenderPump = useCallback(() => {
+    if (renderPumpRef.current) return;
+    renderPumpRef.current = setInterval(() => {
+      const queued = renderQueueRef.current;
+      if (!queued) {
+        if (!streaming) stopRenderPump();
+        return;
+      }
+      const take =
+        queued.length > 500 ? 24 : queued.length > 220 ? 14 : 8;
+      const chunk = queued.slice(0, take);
+      renderQueueRef.current = queued.slice(take);
+      renderDraftRef.current += chunk;
+      setStreamDraft(renderDraftRef.current);
+      scrollToBottom("auto");
+    }, 18);
+  }, [scrollToBottom, stopRenderPump, streaming]);
+
+  const enqueueRenderChunk = useCallback(
+    (chunk: string) => {
+      if (!chunk) return;
+      renderQueueRef.current += chunk;
+      ensureRenderPump();
+    },
+    [ensureRenderPump],
+  );
+
+  const queuePauseIndicator = useCallback(() => {
+    clearPauseTimer();
+    pauseTimerRef.current = setTimeout(() => {
+      setStreamPaused(true);
+      scrollToBottom("auto");
+      pauseTimerRef.current = null;
+    }, 140);
+  }, [clearPauseTimer, scrollToBottom]);
+
+  const flushBufferedStream = useCallback(
+    (force = false) => {
+      if (!force && streamFlushRafRef.current !== null) return;
+      const run = () => {
+        streamFlushRafRef.current = null;
+        const chunk = streamChunkBufferRef.current;
+        if (!chunk) return;
+        streamChunkBufferRef.current = "";
+        streamDraftRef.current += chunk;
+        enqueueRenderChunk(chunk);
+        setStreamPaused(false);
+      };
+      if (force) {
+        run();
+      } else {
+        streamFlushRafRef.current = requestAnimationFrame(run);
+      }
+    },
+    [enqueueRenderChunk],
+  );
+
   useEffect(() => {
     if (!botId) {
       return;
@@ -125,6 +213,18 @@ export default function BotChatPage() {
     setMessages([]);
     setThinking([]);
     thinkingRef.current = [];
+    streamChunkBufferRef.current = "";
+    renderQueueRef.current = "";
+    renderDraftRef.current = "";
+    stopRenderPump();
+    if (streamFlushRafRef.current !== null) {
+      cancelAnimationFrame(streamFlushRafRef.current);
+      streamFlushRafRef.current = null;
+    }
+    clearPauseTimer();
+    streamDraftRef.current = "";
+    setStreamDraft("");
+    setStreamPaused(false);
     setStreaming(false);
 
     apiFetch(apiUrl(`/api/v1/tutorbot/${botId}`))
@@ -176,37 +276,122 @@ export default function BotChatPage() {
 
     ws.onmessage = (e) => {
       const data = JSON.parse(e.data);
-      if (data.type === "thinking") {
+      if (data.type === "stream_start") {
+        clearPauseTimer();
+        streamChunkBufferRef.current = "";
+        renderQueueRef.current = "";
+        renderDraftRef.current = "";
+        stopRenderPump();
+        if (streamFlushRafRef.current !== null) {
+          cancelAnimationFrame(streamFlushRafRef.current);
+          streamFlushRafRef.current = null;
+        }
+        streamDraftRef.current = "";
+        setStreamDraft("");
+        setStreamPaused(false);
+        thinkingRef.current = [];
+        setThinking([]);
+        scrollToBottom("auto");
+      } else if (data.type === "delta") {
+        const chunk = String(data.content || "");
+        if (!chunk) return;
+        clearPauseTimer();
+        streamChunkBufferRef.current += chunk;
+        flushBufferedStream();
+      } else if (data.type === "stream_pause") {
+        queuePauseIndicator();
+      } else if (data.type === "thinking") {
+        clearPauseTimer();
+        flushBufferedStream(true);
         thinkingRef.current = [...thinkingRef.current, data.content];
-        setThinking(thinkingRef.current);
-        scrollToBottom();
+        setThinking([...thinkingRef.current]);
+        queuePauseIndicator();
       } else if (data.type === "content") {
+        clearPauseTimer();
+        flushBufferedStream(true);
+        flushRenderToFull();
         const snap = thinkingRef.current;
+        const finalText =
+          String(data.content || "") || streamDraftRef.current;
         setMessages((msgs) => [
           ...msgs,
           {
             role: "assistant",
-            content: data.content,
+            content: finalText,
             thinking: snap.length ? [...snap] : undefined,
           },
         ]);
+        streamDraftRef.current = "";
+        setStreamDraft("");
+        setStreamPaused(false);
         thinkingRef.current = [];
         setThinking([]);
-        scrollToBottom();
+        scrollToBottom("auto");
       } else if (data.type === "done") {
+        clearPauseTimer();
+        flushBufferedStream(true);
+        flushRenderToFull();
+        setStreaming(false);
+        streamDraftRef.current = "";
+        renderDraftRef.current = "";
+        renderQueueRef.current = "";
+        setStreamDraft("");
+        setStreamPaused(false);
+        setTimeout(() => inputRef.current?.focus(), 50);
+      } else if (data.type === "stopped") {
+        clearPauseTimer();
+        flushBufferedStream(true);
+        flushRenderToFull();
+        const partial = streamDraftRef.current;
+        const snap = thinkingRef.current;
+        if (partial) {
+          setMessages((msgs) => [
+            ...msgs,
+            {
+              role: "assistant",
+              content: partial,
+              thinking: snap.length ? [...snap] : undefined,
+            },
+          ]);
+        }
+        streamDraftRef.current = "";
+        renderDraftRef.current = "";
+        renderQueueRef.current = "";
+        setStreamDraft("");
+        setStreamPaused(false);
+        thinkingRef.current = [];
+        setThinking([]);
         setStreaming(false);
         setTimeout(() => inputRef.current?.focus(), 50);
+        scrollToBottom("auto");
       } else if (data.type === "proactive") {
+        clearPauseTimer();
+        flushBufferedStream(true);
+        flushRenderToFull();
         setMessages((msgs) => [
           ...msgs,
           { role: "assistant", content: data.content },
         ]);
-        scrollToBottom();
+        scrollToBottom("auto");
       } else if (data.type === "error") {
+        clearPauseTimer();
+        flushBufferedStream(true);
+        flushRenderToFull();
+        const partial = streamDraftRef.current;
         setMessages((msgs) => [
           ...msgs,
-          { role: "assistant", content: `Error: ${data.content}` },
+          {
+            role: "assistant",
+            content: partial
+              ? `${partial}\n\nError: ${data.content}`
+              : `Error: ${data.content}`,
+          },
         ]);
+        streamDraftRef.current = "";
+        renderDraftRef.current = "";
+        renderQueueRef.current = "";
+        setStreamDraft("");
+        setStreamPaused(false);
         thinkingRef.current = [];
         setThinking([]);
         setStreaming(false);
@@ -214,14 +399,31 @@ export default function BotChatPage() {
     };
 
     ws.onclose = () => {
+      clearPauseTimer();
+      flushBufferedStream(true);
+      flushRenderToFull();
       setStreaming(false);
     };
 
     return () => {
+      clearPauseTimer();
+      stopRenderPump();
+      if (streamFlushRafRef.current !== null) {
+        cancelAnimationFrame(streamFlushRafRef.current);
+        streamFlushRafRef.current = null;
+      }
       ws.close();
       wsRef.current = null;
     };
-  }, [botId, scrollToBottom]);
+  }, [
+    botId,
+    clearPauseTimer,
+    flushRenderToFull,
+    flushBufferedStream,
+    queuePauseIndicator,
+    scrollToBottom,
+    stopRenderPump,
+  ]);
 
   const handleSend = useCallback(
     (content: string) => {
@@ -235,9 +437,13 @@ export default function BotChatPage() {
 
       setMessages((msgs) => [...msgs, { role: "user", content }]);
       setStreaming(true);
+      streamDraftRef.current = "";
+      setStreamDraft("");
+      setStreamPaused(false);
       setThinking([]);
+      thinkingRef.current = [];
       wsRef.current.send(JSON.stringify({ content }));
-      scrollToBottom();
+      scrollToBottom("auto");
     },
     [botId, streaming, scrollToBottom],
   );
@@ -249,6 +455,13 @@ export default function BotChatPage() {
       if (inputRef.current) inputRef.current.value = "";
     }
   }, [handleSend]);
+
+  const handleStop = useCallback(() => {
+    if (!streaming || !wsRef.current || wsRef.current.readyState !== WebSocket.OPEN) {
+      return;
+    }
+    wsRef.current.send(JSON.stringify({ type: "stop" }));
+  }, [streaming]);
 
   return (
     <div className="flex h-full flex-col">
@@ -342,27 +555,41 @@ export default function BotChatPage() {
             </div>
           ))}
 
-          {/* Streaming indicator */}
+          {/* Live streaming assistant turn */}
           {streaming && (
-            <div className="space-y-2">
-              {thinking.length > 0 && (
-                <div className="space-y-1 border-l-2 border-[var(--border)] pl-3">
-                  {thinking.map((th, i) => (
-                    <p
-                      key={i}
-                      className="text-[12px] text-[var(--muted-foreground)]"
-                    >
-                      {th}
-                    </p>
-                  ))}
-                </div>
+            <div className="max-w-full space-y-2">
+              {streamDraft ? (
+                <AssistantResponse content={streamDraft} />
+              ) : null}
+              {streamPaused && thinking.length > 0 && (
+                <details open className="mb-1">
+                  <summary className="cursor-pointer text-[12px] text-[var(--muted-foreground)] hover:text-[var(--foreground)]">
+                    {t("Thinking ({{count}} steps)", { count: thinking.length })}
+                  </summary>
+                  <div className="mt-1 space-y-1 border-l-2 border-[var(--border)] pl-3">
+                    {thinking.map((th, i) => (
+                      <p
+                        key={i}
+                        className="text-[12px] text-[var(--muted-foreground)]"
+                      >
+                        {th}
+                      </p>
+                    ))}
+                  </div>
+                </details>
               )}
-              <div className="flex items-center gap-2 text-[13px] text-[var(--muted-foreground)]">
-                <Loader2 className="h-3.5 w-3.5 animate-spin" />
-                <span>
-                  {thinking.length > 0 ? t("Working...") : t("Thinking...")}
-                </span>
-              </div>
+              {streamPaused || (!streamDraft && thinking.length === 0) ? (
+                <BotStreamThinking
+                  label={
+                    thinking.length > 0 ? t("Working...") : undefined
+                  }
+                />
+              ) : (
+                <span
+                  className="inline-block h-4 w-0.5 animate-pulse bg-[var(--primary)]"
+                  aria-hidden
+                />
+              )}
             </div>
           )}
         </div>
@@ -376,13 +603,27 @@ export default function BotChatPage() {
             onSend={handleSend}
             disabled={streaming}
           />
-          <button
-            onClick={handleManualSend}
-            disabled={streaming}
-            className="flex h-[42px] w-[42px] items-center justify-center rounded-xl bg-[var(--primary)] text-[var(--primary-foreground)] transition-opacity hover:opacity-90 disabled:opacity-30"
-          >
-            <Send className="h-4 w-4" />
-          </button>
+          {streaming ? (
+            <button
+              type="button"
+              onClick={handleStop}
+              className="group relative flex h-[42px] w-[42px] shrink-0 items-center justify-center rounded-xl bg-[var(--primary)] text-[var(--primary-foreground)] shadow-[0_4px_12px_color-mix(in_srgb,var(--primary)_18%,transparent)] transition-opacity hover:opacity-90"
+              aria-label={t("Stop generating")}
+              title={t("Stop generating")}
+            >
+              <span className="pointer-events-none absolute inset-0 rounded-xl border-2 border-white/30 border-t-white/85 animate-spin opacity-90 transition-opacity group-hover:opacity-40" />
+              <Square size={14} strokeWidth={2.6} className="relative z-10 fill-current" />
+            </button>
+          ) : (
+            <button
+              type="button"
+              onClick={handleManualSend}
+              className="flex h-[42px] w-[42px] items-center justify-center rounded-xl bg-[var(--primary)] text-[var(--primary-foreground)] transition-opacity hover:opacity-90"
+              aria-label={t("Send message")}
+            >
+              <Send className="h-4 w-4" />
+            </button>
+          )}
         </div>
       </div>
 

@@ -879,6 +879,8 @@ class TutorBotManager:
         content: str,
         chat_id: str = "web",
         on_progress: Callable[[str], Awaitable[None]] | None = None,
+        on_content_delta: Callable[[str], Awaitable[None]] | None = None,
+        on_stream_pause: Callable[[], Awaitable[None]] | None = None,
     ) -> str:
         """Send a message to a running bot and return the response."""
         instance = self._bots.get(bot_id)
@@ -897,6 +899,8 @@ class TutorBotManager:
             channel="web",
             chat_id=chat_id,
             on_progress=_progress,
+            on_content_delta=on_content_delta,
+            on_stream_pause=on_stream_pause,
         )
 
         # Forward the reply to any bound external channels so mobile users
@@ -923,6 +927,21 @@ class TutorBotManager:
                         )
 
         return response
+
+    async def cancel_agent_work(self, bot_id: str) -> int:
+        """Cancel in-flight subagents / team work for a bot web session."""
+        instance = self._bots.get(bot_id)
+        if not instance or not instance.running:
+            return 0
+        session_key = f"bot:{bot_id}"
+        loop = instance.agent_loop
+        sub_cancelled = await loop.subagents.cancel_by_session(session_key)
+        team_cancelled = await loop.team.cancel_by_session(session_key)
+        if team_cancelled:
+            session = loop.sessions.get_or_create(session_key)
+            session.metadata.pop("nano_team_active", None)
+            loop.sessions.save(session)
+        return sub_cancelled + team_cancelled
 
     async def auto_start_bots(self) -> None:
         """Scan persisted configs and start bots marked with auto_start: true."""

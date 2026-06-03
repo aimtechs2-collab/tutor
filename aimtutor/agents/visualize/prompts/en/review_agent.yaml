@@ -28,6 +28,9 @@ system: |
   If you make improvements, return the optimized code with changed=true.
 
   Return a JSON object. Do not include any text outside the JSON.
+  ``optimized_code`` MUST be a string (the full code body). For Chart.js,
+  stringify the config object — do NOT nest it as a JSON object inside
+  ``optimized_code``.
 
 user_template: |
   User request:

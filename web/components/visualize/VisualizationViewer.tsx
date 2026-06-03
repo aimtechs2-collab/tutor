@@ -6,40 +6,13 @@ import { Code2, Copy, Check, ExternalLink, Maximize2, X } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import { Mermaid } from "@/components/Mermaid";
 import { prepareIframeHtml } from "@/lib/iframe-html";
+import { parseChartJsConfig } from "@/lib/chart-config";
 import { isManimResult, type VisualizeResult } from "@/lib/visualize-types";
 
 const MathAnimatorViewer = dynamic(
   () => import("@/components/math-animator/MathAnimatorViewer"),
   { ssr: false },
 );
-
-function stripCodeFence(source: string): string {
-  const trimmed = source.trim();
-  const fenced = trimmed.match(
-    /^```(?:json|javascript|js)?\s*([\s\S]*?)\s*```$/i,
-  );
-  return fenced ? fenced[1].trim() : trimmed;
-}
-
-function parseChartConfig(source: string): unknown | null {
-  const raw = stripCodeFence(source);
-  if (!raw) return null;
-  try {
-    return JSON.parse(raw);
-  } catch {
-    const jsonish = raw
-      .replace(/([{,]\s*)([A-Za-z_$][\w$]*)\s*:/g, '$1"$2":')
-      .replace(/'([^'\\]*(?:\\.[^'\\]*)*)'/g, (_match, value: string) =>
-        JSON.stringify(value.replace(/\\'/g, "'")),
-      )
-      .replace(/,\s*([}\]])/g, "$1");
-    try {
-      return JSON.parse(jsonish);
-    } catch {
-      return null;
-    }
-  }
-}
 
 function ChartJsRenderer({ config }: { config: string }) {
   const { t } = useTranslation();
@@ -62,7 +35,7 @@ function ChartJsRenderer({ config }: { config: string }) {
           chartRef.current = null;
         }
 
-        const parsedConfig = parseChartConfig(config) as ConstructorParameters<
+        const parsedConfig = parseChartJsConfig(config) as ConstructorParameters<
           typeof Chart
         >[1] | null;
         if (!parsedConfig) {
@@ -168,17 +141,73 @@ function HtmlRenderer({ html }: { html: string }) {
 
 function SvgRenderer({ svg }: { svg: string }) {
   const { t } = useTranslation();
-  const trimmedSvg = svg.trim();
-  const error = trimmedSvg.startsWith("<svg")
-    ? null
-    : t("Invalid SVG: does not start with <svg");
-  const svgUrl = useMemo(
-    () =>
-      error
-        ? ""
-        : `data:image/svg+xml;charset=utf-8,${encodeURIComponent(trimmedSvg)}`,
-    [error, trimmedSvg],
-  );
+  const decodeCommonEscapes = (input: string): string =>
+    input
+      .replace(/\\n/g, "\n")
+      .replace(/\\t/g, "\t")
+      .replace(/\\"/g, '"')
+      .replace(/\\'/g, "'")
+      .replace(/&lt;/g, "<")
+      .replace(/&gt;/g, ">")
+      .replace(/&quot;/g, '"');
+
+  const normalizedSvg = useMemo(() => {
+    const raw = (svg || "").trim();
+    const fenced = raw.match(/^```(?:svg|xml)?\s*([\s\S]*?)\s*```$/i);
+    const source = decodeCommonEscapes((fenced ? fenced[1] : raw).trim());
+    const start = source.toLowerCase().indexOf("<svg");
+    const end = source.toLowerCase().lastIndexOf("</svg>");
+    if (start === -1 || end === -1 || end <= start) return "";
+    let extracted = source.slice(start, end + 6).trim();
+    // Repair common XML breakage from model output: bare '&' in labels/notes.
+    extracted = extracted.replace(/&(?!#\d+;|#x[0-9a-f]+;|[a-z][a-z0-9]+;)/gi, "&amp;");
+    // Repair template-like attributes such as width={123} -> width="123".
+    extracted = extracted.replace(/=\{([^}]+)\}/g, '="$1"');
+    return extracted;
+  }, [svg]);
+
+  const parsedSvg = useMemo<{ ok: true; svg: string } | { ok: false; error: string }>(() => {
+    if (!normalizedSvg) {
+      return { ok: false, error: t("Invalid SVG: missing <svg> block") };
+    }
+    const parser = new DOMParser();
+    try {
+      let parsed = parser.parseFromString(normalizedSvg, "image/svg+xml");
+      if (parsed.querySelector("parsererror")) {
+        // Last-chance fallback: wrap in <svg> if model emitted only inner nodes.
+        const wrapped = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 800 480">${normalizedSvg}</svg>`;
+        parsed = parser.parseFromString(wrapped, "image/svg+xml");
+        if (parsed.querySelector("parsererror")) {
+          // XML parser is strict; attempt HTML parser recovery for slightly
+          // malformed but still renderable SVG markup.
+          const htmlParsed = parser.parseFromString(normalizedSvg, "text/html");
+          const recovered = htmlParsed.querySelector("svg");
+          if (recovered) {
+            return { ok: true, svg: recovered.outerHTML };
+          }
+          return { ok: false, error: t("Invalid SVG: could not parse XML") };
+        }
+        const node = parsed.querySelector("svg");
+        return node
+          ? { ok: true, svg: node.outerHTML }
+          : { ok: false, error: t("Invalid SVG: could not parse XML") };
+      }
+      const node = parsed.querySelector("svg");
+      return node
+        ? { ok: true, svg: node.outerHTML }
+        : { ok: false, error: t("Invalid SVG: could not parse XML") };
+    } catch {
+      return { ok: false, error: t("Invalid SVG: could not parse XML") };
+    }
+  }, [normalizedSvg, t]);
+  const error = parsedSvg.ok ? null : parsedSvg.error;
+
+  const svgUrl = useMemo(() => {
+    if (error || !parsedSvg.ok) return "";
+    // Use a stable data URL (instead of Blob URL) so fullscreen/duplicate
+    // renderers don't depend on object URL lifecycle timing.
+    return `data:image/svg+xml;charset=utf-8,${encodeURIComponent(parsedSvg.svg)}`;
+  }, [error, parsedSvg]);
 
   if (error) {
     return (
@@ -255,7 +284,53 @@ export default function VisualizationViewer({
   // TypeScript narrows ``result`` to the text-only variant from here on.
   // HTML iframe already provides its own "Open in new tab" affordance; the
   // sandboxed iframe also doesn't behave well inside a re-rendered modal.
-  const supportsFullscreen = result.render_type !== "html";
+  const isSvgStoryboard =
+    result.render_type === "svg" &&
+    /storyboard/i.test(String(result.analysis?.chart_type || ""));
+  const supportsFullscreen = result.render_type !== "html" && !isSvgStoryboard;
+  const supportsOpenInNewTab = result.render_type === "mermaid";
+
+  const handleOpenMermaidInNewTab = () => {
+    if (result.render_type !== "mermaid") return;
+    try {
+      const escaped = JSON.stringify(result.code.content || "");
+      const standalone = `<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Mermaid Visualization</title>
+  <style>
+    html,body{margin:0;padding:0;background:#0b1020;color:#e5e7eb;font-family:Inter,Segoe UI,Roboto,sans-serif}
+    .wrap{padding:20px;min-height:100vh;box-sizing:border-box}
+    .panel{background:#0f172a;border:1px solid #1f2a44;border-radius:12px;padding:16px;overflow:auto}
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <div class="panel">
+      <div id="mermaid-root" class="mermaid"></div>
+    </div>
+  </div>
+  <script type="module">
+    import mermaid from 'https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.esm.min.mjs';
+    mermaid.initialize({ startOnLoad: false, securityLevel: 'loose', theme: 'dark' });
+    const code = ${escaped};
+    const root = document.getElementById('mermaid-root');
+    if (root) {
+      root.textContent = code;
+      await mermaid.run({ nodes: [root] });
+    }
+  </script>
+</body>
+</html>`;
+      const url = URL.createObjectURL(new Blob([standalone], { type: "text/html" }));
+      window.open(url, "_blank", "noopener,noreferrer");
+      setTimeout(() => URL.revokeObjectURL(url), 60_000);
+    } catch {
+      /* no-op */
+    }
+  };
 
   const handleCopy = async () => {
     try {
@@ -282,49 +357,63 @@ export default function VisualizationViewer({
             type="button"
             onClick={() => setFullscreen(true)}
             title={t("Fullscreen")}
-            className="absolute right-2 top-2 z-10 inline-flex items-center gap-1 rounded-md border border-[var(--border)] bg-[var(--background)]/90 px-2 py-1 text-[10px] font-medium text-[var(--muted-foreground)] backdrop-blur transition-colors hover:text-[var(--foreground)]"
+            className={`absolute top-2 z-10 inline-flex items-center gap-1 rounded-md border border-[var(--border)] bg-[var(--background)]/90 px-2 py-1 text-[10px] font-medium text-[var(--muted-foreground)] backdrop-blur transition-colors hover:text-[var(--foreground)] ${
+              supportsOpenInNewTab ? "right-[92px]" : "right-2"
+            }`}
           >
             <Maximize2 size={10} strokeWidth={1.8} />
             {t("Fullscreen")}
           </button>
         )}
+        {supportsOpenInNewTab && (
+          <button
+            type="button"
+            onClick={handleOpenMermaidInNewTab}
+            title={t("Open in new tab")}
+            className="absolute right-2 top-2 z-10 inline-flex items-center gap-1 rounded-md border border-[var(--border)] bg-[var(--background)]/90 px-2 py-1 text-[10px] font-medium text-[var(--muted-foreground)] backdrop-blur transition-colors hover:text-[var(--foreground)]"
+          >
+            <ExternalLink size={10} strokeWidth={1.8} />
+            {t("Open")}
+          </button>
+        )}
         {renderTextVisualization(result)}
       </div>
 
-      {/* Toolbar */}
-      <div className="flex items-center gap-2">
-        <button
-          type="button"
-          onClick={() => setShowCode((prev) => !prev)}
-          className="inline-flex items-center gap-1.5 rounded-md border border-[var(--border)] bg-[var(--background)] px-2.5 py-1.5 text-[11px] font-medium text-[var(--muted-foreground)] transition-colors hover:text-[var(--foreground)]"
-        >
-          <Code2 size={12} strokeWidth={1.8} />
-          {showCode ? t("Hide code") : t("Show code")}
-        </button>
+      {!isSvgStoryboard && (
+        <div className="flex items-center gap-2">
+          <button
+            type="button"
+            onClick={() => setShowCode((prev) => !prev)}
+            className="inline-flex items-center gap-1.5 rounded-md border border-[var(--border)] bg-[var(--background)] px-2.5 py-1.5 text-[11px] font-medium text-[var(--muted-foreground)] transition-colors hover:text-[var(--foreground)]"
+          >
+            <Code2 size={12} strokeWidth={1.8} />
+            {showCode ? t("Hide code") : t("Show code")}
+          </button>
 
-        <button
-          type="button"
-          onClick={handleCopy}
-          className="inline-flex items-center gap-1.5 rounded-md border border-[var(--border)] bg-[var(--background)] px-2.5 py-1.5 text-[11px] font-medium text-[var(--muted-foreground)] transition-colors hover:text-[var(--foreground)]"
-        >
-          {copied ? (
-            <Check size={12} strokeWidth={1.8} />
-          ) : (
-            <Copy size={12} strokeWidth={1.8} />
-          )}
-          {copied ? t("Copied") : t("Copy code")}
-        </button>
+          <button
+            type="button"
+            onClick={handleCopy}
+            className="inline-flex items-center gap-1.5 rounded-md border border-[var(--border)] bg-[var(--background)] px-2.5 py-1.5 text-[11px] font-medium text-[var(--muted-foreground)] transition-colors hover:text-[var(--foreground)]"
+          >
+            {copied ? (
+              <Check size={12} strokeWidth={1.8} />
+            ) : (
+              <Copy size={12} strokeWidth={1.8} />
+            )}
+            {copied ? t("Copied") : t("Copy code")}
+          </button>
 
-        <span className="ml-auto text-[10px] uppercase tracking-wider text-[var(--muted-foreground)]/50">
-          {result.render_type === "svg"
-            ? "SVG"
-            : result.render_type === "mermaid"
-              ? `Mermaid · ${result.analysis.chart_type || "diagram"}`
-              : result.render_type === "html"
-                ? `HTML · ${result.analysis.chart_type || "interactive"}`
-                : `Chart.js · ${result.analysis.chart_type || "chart"}`}
-        </span>
-      </div>
+          <span className="ml-auto text-[10px] uppercase tracking-wider text-[var(--muted-foreground)]/50">
+            {result.render_type === "svg"
+              ? "SVG"
+              : result.render_type === "mermaid"
+                ? `Mermaid · ${result.analysis.chart_type || "diagram"}`
+                : result.render_type === "html"
+                  ? `HTML · ${result.analysis.chart_type || "interactive"}`
+                  : `Chart.js · ${result.analysis.chart_type || "chart"}`}
+          </span>
+        </div>
+      )}
 
       {/* Code panel — matches the always-dark .md-code-block style used by the
           markdown renderers so a "Show code" toggle inside a chart message

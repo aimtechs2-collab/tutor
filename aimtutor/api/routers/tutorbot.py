@@ -437,6 +437,48 @@ async def bot_chat_ws(ws: WebSocket, bot_id: str):
     logger.info("WebSocket connected for bot '%s'", bot_id)
 
     async def _handle_user_messages():
+        turn_task: asyncio.Task[None] | None = None
+
+        async def _cancel_active_turn() -> bool:
+            nonlocal turn_task
+            if turn_task is None or turn_task.done():
+                return False
+            turn_task.cancel()
+            try:
+                await turn_task
+            except asyncio.CancelledError:
+                pass
+            except Exception:
+                logger.exception("Turn task failed after cancel for bot '%s'", bot_id)
+            turn_task = None
+            return True
+
+        async def _run_turn(user_content: str, chat_id_value: str) -> None:
+            async def on_progress(text: str) -> None:
+                await _safe_send({"type": "stream_pause"})
+                await _safe_send({"type": "thinking", "content": text})
+
+            async def on_content_delta(text: str) -> None:
+                if text:
+                    await _safe_send({"type": "delta", "content": text})
+
+            async def on_stream_pause() -> None:
+                await _safe_send({"type": "stream_pause"})
+
+            if not await _safe_send({"type": "stream_start"}):
+                return
+            response = await mgr.send_message(
+                bot_id,
+                user_content,
+                chat_id=chat_id_value,
+                on_progress=on_progress,
+                on_content_delta=on_content_delta,
+                on_stream_pause=on_stream_pause,
+            )
+            if not await _safe_send({"type": "content", "content": response}):
+                return
+            await _safe_send({"type": "done"})
+
         while not disconnected.is_set():
             try:
                 raw = await ws.receive_text()
@@ -450,41 +492,42 @@ async def bot_chat_ws(ws: WebSocket, bot_id: str):
                     break
                 continue
 
+            if data.get("type") == "stop":
+                await _cancel_active_turn()
+                await mgr.cancel_agent_work(bot_id)
+                continue
+
             content = data.get("content", "").strip()
             if not content:
                 continue
 
-            async def on_progress(text: str) -> None:
-                # Best-effort: never raise. If the client is gone, just stop
-                # forwarding progress; the surrounding loop will notice the
-                # `disconnected` event and exit. Raising here would leak
-                # WebSocketDisconnect into `mgr.send_message`, which catches
-                # `Exception` broadly and would swallow the disconnect signal,
-                # leaving the bot to finish an expensive turn for nobody.
-                await _safe_send({"type": "thinking", "content": text})
+            await _cancel_active_turn()
 
-            try:
-                chat_id_value = data.get("chat_id", "web")
-                response = await mgr.send_message(
-                    bot_id,
-                    content,
-                    chat_id=chat_id_value,
-                    on_progress=on_progress,
-                )
-                if not await _safe_send({"type": "content", "content": response}):
-                    break
-                if not await _safe_send({"type": "done"}):
-                    break
-            except RuntimeError as exc:
-                if not await _safe_send({"type": "error", "content": str(exc)}):
-                    break
-            except WebSocketDisconnect:
-                disconnected.set()
-                break
-            except Exception:
-                logger.exception("Error processing message for bot '%s'", bot_id)
-                if not await _safe_send({"type": "error", "content": "Internal error"}):
-                    break
+            async def _turn_wrapper(user_content: str, chat_id_value: str) -> None:
+                try:
+                    await _run_turn(user_content, chat_id_value)
+                except asyncio.CancelledError:
+                    await mgr.cancel_agent_work(bot_id)
+                    await _safe_send({"type": "stopped"})
+                except RuntimeError as exc:
+                    if not await _safe_send({"type": "error", "content": str(exc)}):
+                        disconnected.set()
+                except WebSocketDisconnect:
+                    disconnected.set()
+                except Exception:
+                    logger.exception(
+                        "Error processing message for bot '%s'", bot_id
+                    )
+                    await _safe_send(
+                        {"type": "error", "content": "Internal error"}
+                    )
+
+            turn_task = asyncio.create_task(
+                _turn_wrapper(content, str(data.get("chat_id") or "web"))
+            )
+
+        if turn_task is not None and not turn_task.done():
+            turn_task.cancel()
 
     async def _handle_notifications():
         # Race the queue read against the disconnect signal so this loop

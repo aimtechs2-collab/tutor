@@ -36,6 +36,7 @@ class CodeGeneratorAgent(BaseAgent):
         history_context: str,
         analysis: VisualizationAnalysis,
         attachments: list[Attachment] | None = None,
+        model: str | None = None,
     ) -> str:
         system_prompt = self.get_prompt("system")
         user_template = self.get_prompt("user_template")
@@ -55,6 +56,7 @@ class CodeGeneratorAgent(BaseAgent):
             system_prompt=system_prompt,
             stage="generating",
             attachments=attachments,
+            model=model,
             trace_meta=build_trace_metadata(
                 call_id=new_call_id("viz-codegen"),
                 phase="generating",

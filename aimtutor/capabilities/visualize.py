@@ -44,6 +44,15 @@ _VISUALIZE_STAGES = [
 _MANIM_RENDER_TYPES = {"manim_video", "manim_image"}
 
 
+def _fallback_render_type_for_manim(render_type: str) -> str:
+    """Map Manim-only render requests to web-native renderers."""
+    if render_type == "manim_video":
+        return "html"
+    if render_type == "manim_image":
+        return "svg"
+    return render_type
+
+
 class VisualizeCapability(BaseCapability):
     manifest = CapabilityManifest(
         name="visualize",
@@ -61,8 +70,13 @@ class VisualizeCapability(BaseCapability):
         from aimtutor.agents.visualize.pipeline import VisualizePipeline
         from aimtutor.agents.visualize.models import ReviewResult, VisualizationAnalysis
         from aimtutor.agents.visualize.utils import (
+            build_interactive_animation_fallback_html,
             build_fallback_html,
+            choose_best_coding_model_option,
             extract_primary_html_attachment,
+            has_interactive_animation_controls,
+            inject_interactive_animation_controls,
+            is_effectively_blank_html,
             is_valid_chartjs_config,
             is_valid_html_document,
             resolve_visualize_render_mode,
@@ -70,8 +84,12 @@ class VisualizeCapability(BaseCapability):
         )
         from aimtutor.capabilities._answer_now import extract_answer_now_context
         from aimtutor.services.llm.config import get_llm_config
+        from aimtutor.services.model_selection import list_llm_options
+        from aimtutor.services.config import get_model_catalog_service
 
         request_config = validate_visualize_request_config(context.config_overrides)
+        requested_render_mode = str(request_config.render_mode)
+        animation_requested = requested_render_mode == "manim_video"
         render_mode = resolve_visualize_render_mode(
             request_config.render_mode,
             attachments=context.attachments,
@@ -135,6 +153,17 @@ class VisualizeCapability(BaseCapability):
             trace_callback=self._build_trace_bridge(stream, i18n=i18n),
         )
 
+        preferred_codegen_model: str | None = None
+        if animation_requested:
+            try:
+                catalog = get_model_catalog_service().load()
+                llm_options_payload = list_llm_options(catalog)
+                best = choose_best_coding_model_option(llm_options_payload.get("options"))
+                if best:
+                    preferred_codegen_model = str(best.get("model") or "").strip() or None
+            except Exception:
+                preferred_codegen_model = None
+
         # Stage 1: Analyze (routing decision)
         async with stream.stage("analyzing", source=self.name):
             await stream.thinking(
@@ -148,6 +177,35 @@ class VisualizeCapability(BaseCapability):
                 render_mode=render_mode,
                 attachments=context.attachments,
             )
+            if analysis.render_type in _MANIM_RENDER_TYPES:
+                # This deployment does not rely on server-side Manim. Convert
+                # to web-native renderers so Animation/Storyboard stay usable.
+                original_render_type = analysis.render_type
+                analysis.render_type = _fallback_render_type_for_manim(original_render_type)  # type: ignore[assignment]
+                analysis.rationale = (
+                    (analysis.rationale + " ").strip()
+                    + "Manim unavailable: using web-native fallback."
+                ).strip()
+                if original_render_type == "manim_video":
+                    if not (analysis.chart_type or "").strip():
+                        analysis.chart_type = "animation"  # type: ignore[assignment]
+                    hints = {
+                        "play/pause button",
+                        "step navigation (next/previous)",
+                        "restart control",
+                        "visible animation state indicator",
+                    }
+                    existing = {
+                        str(item).strip().lower()
+                        for item in (analysis.visual_elements or [])
+                        if str(item).strip()
+                    }
+                    for hint in hints:
+                        if hint not in existing:
+                            analysis.visual_elements.append(hint)
+                elif original_render_type == "manim_image":
+                    if not (analysis.chart_type or "").strip():
+                        analysis.chart_type = "storyboard"  # type: ignore[assignment]
             await stream.progress(
                 message=i18n.t(
                     "render_type_detected",
@@ -185,6 +243,7 @@ class VisualizeCapability(BaseCapability):
                 history_context=history_context,
                 analysis=analysis,
                 attachments=context.attachments,
+                model=preferred_codegen_model,
             )
             await stream.progress(
                 message=i18n.t("code_generated", "Code generated."),
@@ -206,6 +265,38 @@ class VisualizeCapability(BaseCapability):
                         changed=False,
                         review_notes="Skipped LLM review for html render_type.",
                     )
+                    if animation_requested:
+                        if is_effectively_blank_html(final_code):
+                            final_code = build_interactive_animation_fallback_html(
+                                title=analysis.description or "Interactive Animation",
+                                summary=analysis.data_description,
+                                note=(
+                                    "Generated HTML looked empty; using built-in "
+                                    "interactive fallback."
+                                ),
+                            )
+                            review = ReviewResult(
+                                optimized_code=final_code,
+                                changed=True,
+                                review_notes=(
+                                    "Animation mode fallback: generated content was blank; "
+                                    "used interactive fallback page."
+                                ),
+                            )
+                        elif not has_interactive_animation_controls(final_code):
+                            final_code = inject_interactive_animation_controls(
+                                final_code,
+                                title=analysis.description or "Interactive Animation",
+                            )
+                            review = ReviewResult(
+                                optimized_code=final_code,
+                                changed=True,
+                                review_notes=(
+                                    "Animation mode enhancement: injected interactive controls "
+                                    "(play/pause, next/previous, restart, progress) into "
+                                    "dataset-specific HTML."
+                                ),
+                            )
                     await stream.progress(
                         message=i18n.t(
                             "html_ready_review_skipped",
@@ -233,19 +324,50 @@ class VisualizeCapability(BaseCapability):
                         source=self.name,
                         stage="reviewing",
                     )
+            elif analysis.render_type == "chartjs" and is_valid_chartjs_config(code):
+                final_code = code
+                review = ReviewResult(
+                    optimized_code=final_code,
+                    changed=False,
+                    review_notes="Skipped LLM review; Chart.js config already valid.",
+                )
+                await stream.progress(
+                    message=i18n.t(
+                        "chartjs_ready_review_skipped",
+                        "Chart ready (review skipped).",
+                    ),
+                    source=self.name,
+                    stage="reviewing",
+                )
             else:
                 await stream.thinking(
                     i18n.t("reviewing", "Reviewing and optimizing code..."),
                     source=self.name,
                     stage="reviewing",
                 )
-                review = await pipeline.run_review(
-                    user_input=context.user_message,
-                    analysis=analysis,
-                    code=code,
-                    attachments=context.attachments,
-                )
-                final_code = review.optimized_code
+                try:
+                    review = await pipeline.run_review(
+                        user_input=context.user_message,
+                        analysis=analysis,
+                        code=code,
+                        attachments=context.attachments,
+                    )
+                    final_code = review.optimized_code
+                except Exception as exc:
+                    final_code = code
+                    review = ReviewResult(
+                        optimized_code=final_code,
+                        changed=False,
+                        review_notes=f"Review failed ({exc}); using generated code.",
+                    )
+                    await stream.progress(
+                        message=i18n.t(
+                            "review_failed_using_generated",
+                            "Review step failed; showing generated visualization.",
+                        ),
+                        source=self.name,
+                        stage="reviewing",
+                    )
                 if analysis.render_type == "chartjs" and not is_valid_chartjs_config(
                     final_code
                 ):

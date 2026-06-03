@@ -32,6 +32,7 @@ export default function ModelSelector({
   systemDefaultDetail,
   helperText,
   placement = "top",
+  align = "end",
   onChange,
 }: {
   options: LLMOption[];
@@ -44,6 +45,8 @@ export default function ModelSelector({
   systemDefaultDetail?: string;
   helperText?: string;
   placement?: "top" | "bottom";
+  /** Horizontal alignment of the menu relative to the trigger (start = left edge). */
+  align?: "start" | "end";
   onChange: (selection: LLMSelection | null) => void;
 }) {
   const { t } = useTranslation();
@@ -96,9 +99,10 @@ export default function ModelSelector({
   })();
   const menuPlacementClass =
     placement === "bottom" ? "top-full mt-1.5" : "bottom-full mb-1.5";
+  const menuAlignClass = align === "start" ? "left-0" : "right-0";
 
   return (
-    <div ref={rootRef} className="relative">
+    <div ref={rootRef} className="relative w-fit">
       <button
         type="button"
         disabled={disabled}
@@ -128,7 +132,7 @@ export default function ModelSelector({
 
       {open && !disabled && (
         <div
-          className={`absolute right-0 z-50 ${menuPlacementClass} w-[min(340px,calc(100vw-32px))] overflow-hidden rounded-xl border border-[var(--border)] bg-[var(--popover)] shadow-lg backdrop-blur-md`}
+          className={`absolute z-50 ${menuAlignClass} ${menuPlacementClass} w-[min(340px,calc(100vw-32px))] overflow-hidden rounded-xl border border-[var(--border)] bg-[var(--popover)] shadow-lg backdrop-blur-md`}
         >
           <div className="border-b border-[var(--border)]/50 px-3 py-2">
             <div className="text-[12px] font-semibold text-[var(--foreground)]">

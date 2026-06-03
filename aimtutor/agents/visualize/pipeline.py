@@ -66,12 +66,14 @@ class VisualizePipeline:
         history_context: str,
         analysis: VisualizationAnalysis,
         attachments: list[Attachment] | None = None,
+        model: str | None = None,
     ) -> str:
         return await self.code_agent.process(
             user_input=user_input,
             history_context=history_context,
             analysis=analysis,
             attachments=attachments,
+            model=model,
         )
 
     async def run_review(

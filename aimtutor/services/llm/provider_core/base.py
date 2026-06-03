@@ -386,9 +386,26 @@ class LLMProvider(ABC):
         reasoning_effort: object = _SENTINEL,
         tool_choice: str | dict[str, Any] | None = None,
         retry_delays: Sequence[float] | None = None,
+        on_content_delta: Callable[[str], Awaitable[None]] | None = None,
+        on_reasoning_delta: Callable[[str], Awaitable[None]] | None = None,
         **kwargs: Any,
     ) -> LLMResponse:
         """Call chat() with retry on transient provider failures."""
+        if on_content_delta is not None or on_reasoning_delta is not None:
+            return await self.chat_stream_with_retry(
+                messages=messages,
+                tools=tools,
+                model=model,
+                max_tokens=max_tokens,
+                temperature=temperature,
+                reasoning_effort=reasoning_effort,
+                tool_choice=tool_choice,
+                on_content_delta=on_content_delta,
+                on_reasoning_delta=on_reasoning_delta,
+                retry_delays=retry_delays,
+                **kwargs,
+            )
+
         if max_tokens is self._SENTINEL:
             max_tokens = self.generation.max_tokens
         if temperature is self._SENTINEL:

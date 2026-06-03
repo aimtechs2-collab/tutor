@@ -1,3 +1,4 @@
+import { looksLikeChartJsConfig, stripCodeFence } from "@/lib/chart-config";
 import type { MathAnimatorResult } from "@/lib/math-animator-types";
 import { extractMathAnimatorResult } from "@/lib/math-animator-types";
 
@@ -105,6 +106,92 @@ interface VisualizeManimResult {
 }
 
 export type VisualizeResult = VisualizeTextResult | VisualizeManimResult;
+
+function looksLikeSvg(text: string): boolean {
+  const raw = stripCodeFence(text).toLowerCase();
+  return raw.includes("<svg");
+}
+
+function looksLikeMermaid(text: string): boolean {
+  const raw = stripCodeFence(text).toLowerCase();
+  return /^(graph|flowchart|sequenceDiagram|classDiagram|stateDiagram|erDiagram|gantt|mindmap|pie)\b/.test(
+    raw,
+  );
+}
+
+function looksLikeHtml(text: string): boolean {
+  const raw = stripCodeFence(text).toLowerCase();
+  return raw.includes("<html") || raw.includes("<!doctype");
+}
+
+/** Recover a visualize payload from assistant markdown when the result event is missing. */
+export function extractVisualizeResultFromContent(
+  content: string,
+): VisualizeResult | null {
+  if (!content?.trim()) return null;
+
+  let renderType: VisualizeTextRenderType | null = null;
+  let codeBody = "";
+
+  const fenceMatch = content.match(
+    /```(json|javascript|js|svg|mermaid|html)?\s*([\s\S]*?)```/i,
+  );
+  if (fenceMatch) {
+    const lang = (fenceMatch[1] || "").toLowerCase();
+    codeBody = fenceMatch[2].trim();
+    if (lang === "svg" || looksLikeSvg(codeBody)) renderType = "svg";
+    else if (lang === "mermaid" || looksLikeMermaid(codeBody)) renderType = "mermaid";
+    else if (lang === "html" || looksLikeHtml(codeBody)) renderType = "html";
+    else if (looksLikeChartJsConfig(codeBody)) renderType = "chartjs";
+  }
+
+  if (!renderType) {
+    const trimmed = content.trim();
+    if (looksLikeChartJsConfig(trimmed)) {
+      renderType = "chartjs";
+      codeBody = stripCodeFence(trimmed);
+    } else if (looksLikeSvg(trimmed)) {
+      renderType = "svg";
+      codeBody = stripCodeFence(trimmed);
+    } else if (looksLikeMermaid(trimmed)) {
+      renderType = "mermaid";
+      codeBody = stripCodeFence(trimmed);
+    } else if (looksLikeHtml(trimmed)) {
+      renderType = "html";
+      codeBody = stripCodeFence(trimmed);
+    }
+  }
+
+  if (!renderType || !codeBody) return null;
+
+  const lang =
+    renderType === "svg"
+      ? "svg"
+      : renderType === "mermaid"
+        ? "mermaid"
+        : renderType === "html"
+          ? "html"
+          : "javascript";
+
+  return {
+    response: content,
+    render_type: renderType,
+    code: { language: lang, content: codeBody },
+    analysis: {
+      render_type: renderType,
+      description: "",
+      data_description: "",
+      chart_type: "",
+      visual_elements: [],
+      rationale: "Recovered from assistant message content.",
+    },
+    review: {
+      optimized_code: codeBody,
+      changed: false,
+      review_notes: "Recovered from message content (no result event).",
+    },
+  };
+}
 
 export function extractVisualizeResult(
   resultMetadata: Record<string, unknown> | undefined,
