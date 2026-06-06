@@ -252,7 +252,30 @@ export default function BookChatPanel({
 
   function ensureClient(): UnifiedWSClient {
     if (clientRef.current) return clientRef.current;
-    const client = new UnifiedWSClient(handleEvent, () => setBusy(false));
+    const client = new UnifiedWSClient(handleEvent, () => {
+      setBusy((wasBusy) => {
+        if (wasBusy) {
+          setMessages((prev) => {
+            const last = prev[prev.length - 1];
+            if (last?.role === "assistant" && last.streaming) {
+              return [
+                ...prev.slice(0, -1),
+                { ...last, streaming: false },
+              ];
+            }
+            return [
+              ...prev,
+              {
+                role: "assistant" as const,
+                content: t("Connection lost. Please try again."),
+                streaming: false,
+              },
+            ];
+          });
+        }
+        return false;
+      });
+    });
     clientRef.current = client;
     client.connect();
     return client;
