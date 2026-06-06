@@ -13,7 +13,7 @@ from aimtutor.api.routers.auth import require_auth
 from aimtutor.services.memory.paths import memory_root
 from aimtutor.services.session import get_session_store
 
-router = APIRouter()
+router = APIRouter(dependencies=[Depends(require_auth)])
 
 # Voice trace scan is filesystem-heavy; cache briefly so /stats and /overview
 # do not re-walk JSONL on every dashboard visit.
@@ -174,7 +174,6 @@ def _activities_from_sessions(
 
 @router.get("/overview")
 async def get_dashboard_overview(
-    _payload: Any = Depends(require_auth),
     activity_limit: int = 40,
 ) -> dict[str, Any]:
     """Single round-trip payload for the dashboard (stats + recent + memory)."""
@@ -192,7 +191,7 @@ async def get_dashboard_overview(
 
 
 @router.get("/stats")
-async def get_dashboard_stats(_payload: Any = Depends(require_auth)) -> dict[str, Any]:
+async def get_dashboard_stats() -> dict[str, Any]:
     """Aggregate stats for the current user's dashboard."""
     store = get_session_store()
     sessions = await store.list_sessions(
@@ -202,9 +201,7 @@ async def get_dashboard_stats(_payload: Any = Depends(require_auth)) -> dict[str
 
 
 @router.get("/memory-snapshot")
-async def get_memory_snapshot(
-    _payload: Any = Depends(require_auth),
-) -> dict[str, str]:
+async def get_memory_snapshot() -> dict[str, str]:
     """Return L2 memory summaries for the current user."""
     return _memory_snapshot()
 

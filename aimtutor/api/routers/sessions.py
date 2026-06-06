@@ -5,8 +5,9 @@ Unified session history API.
 from __future__ import annotations
 
 import logging
+from typing import Any
 
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, Field, field_validator
 
 from aimtutor.services.session import get_session_store, get_sqlite_session_store
@@ -14,7 +15,13 @@ from aimtutor.services.storage.attachment_store import get_attachment_store
 
 logger = logging.getLogger(__name__)
 
-router = APIRouter()
+# All session endpoints require authentication so each request resolves to the
+# correct per-user path (and therefore the correct per-user SQLite DB).
+# Without this dependency the user ContextVar is never set and every caller
+# falls through to the shared admin store, leaking history across accounts.
+from aimtutor.api.routers.auth import require_auth  # noqa: E402
+
+router = APIRouter(dependencies=[Depends(require_auth)])
 
 
 class SessionRenameRequest(BaseModel):

@@ -69,6 +69,20 @@ class EmbeddingClient:
 
         import asyncio
 
+        # Safety truncation: some providers (e.g. OpenAI text-embedding-3-*)
+        # cap input at 8192 tokens. Dense code/table nodes from PDF parsing can
+        # exceed this even when SentenceSplitter runs. At ~2 chars/token (worst
+        # case for code), 8192 tokens ≈ 16384 chars — cap at 15000 to be safe.
+        _MAX_CHARS = 15000
+        truncated = [t[:_MAX_CHARS] if len(t) > _MAX_CHARS else t for t in texts]
+        if truncated != texts:
+            n = sum(1 for a, b in zip(texts, truncated) if a != b)
+            self.logger.warning(
+                f"Truncated {n}/{len(texts)} text(s) to {_MAX_CHARS} chars "
+                f"to stay within embedding model token limit."
+            )
+        texts = truncated
+
         # Clamp configured batch size against the provider's per-request item
         # cap. SiliconFlow Qwen3 family caps at 32; DashScope at 20; others
         # have generous defaults. Without this clamp, indexing a doc with many
