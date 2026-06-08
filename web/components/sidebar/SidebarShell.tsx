@@ -2,13 +2,15 @@
 
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
-import { type ReactNode } from "react";
+import { type ReactNode, useState } from "react";
 import { TextLogo } from "@/components/brand/TextLogo";
 import { useAppShell } from "@/context/AppShellContext";
 import {
   BookOpen,
   Bot,
   Brain,
+  ChevronDown,
+  GraduationCap,
   LayoutDashboard,
   LayoutGrid,
   Library,
@@ -21,7 +23,6 @@ import {
 } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import SessionList from "@/components/SessionList";
-import { SidebarMoreNav } from "@/components/sidebar/SidebarMoreNav";
 import { TutorBotRecent } from "@/components/sidebar/TutorBotRecent";
 import type { SessionSummary } from "@/lib/session-api";
 import { Tooltip } from "@/components/ui/Tooltip";
@@ -33,14 +34,18 @@ interface NavEntry {
   tooltipKey?: string;
 }
 
-/** Product areas (chat threads live in Recents below). */
-const FEATURE_NAV: NavEntry[] = [
+/** Top-level single links shown above the grouped section. */
+const TOP_NAV: NavEntry[] = [
   {
     href: "/dashboard",
     label: "Dashboard",
     icon: LayoutDashboard,
     tooltipKey: "Dashboard",
   },
+];
+
+/** All items grouped under the collapsible "Learning Tools" section. */
+const LEARNING_TOOLS_NAV: NavEntry[] = [
   {
     href: "/agents",
     label: "TutorBot",
@@ -74,9 +79,8 @@ const FEATURE_NAV: NavEntry[] = [
   },
 ];
 
-/** First four features + Chat = five primary sidebar links; rest live under More. */
-const PRIMARY_FEATURE_NAV = FEATURE_NAV.slice(0, 4);
-const MORE_FEATURE_NAV = FEATURE_NAV.slice(4);
+/** All feature nav items flattened — used for collapsed icon strip. */
+const ALL_FEATURE_NAV: NavEntry[] = [...TOP_NAV, ...LEARNING_TOOLS_NAV];
 
 interface SidebarShellProps {
   sessions?: SessionSummary[];
@@ -106,6 +110,14 @@ export function SidebarShell({
   const { t } = useTranslation();
   const { sidebarCollapsed: collapsed, setSidebarCollapsed: setCollapsed } =
     useAppShell();
+
+  // Auto-open the Learning Tools section when the active page is inside it.
+  const learningToolsActive = LEARNING_TOOLS_NAV.some((item) =>
+    pathname.startsWith(item.href)
+  );
+  const [learningToolsOpen, setLearningToolsOpen] = useState(
+    () => learningToolsActive
+  );
 
   const chatActive = pathname.startsWith("/chat");
   const showRecents =
@@ -155,7 +167,7 @@ export function SidebarShell({
         <div className="my-1.5 h-px w-7 bg-[var(--border)]/40" />
 
         {/* Feature nav */}
-        <nav className="flex w-full flex-col items-center gap-1 px-1.5">
+        <nav className="relative flex w-full flex-col items-center gap-1 px-1.5">
           <Tooltip label={t("Chat")} side="right">
             <Link
               href="/chat"
@@ -172,18 +184,11 @@ export function SidebarShell({
               <MessageSquare size={18} strokeWidth={chatActive ? 2 : 1.6} />
             </Link>
           </Tooltip>
-          {PRIMARY_FEATURE_NAV.map((item) => {
+          {/* Dashboard */}
+          {TOP_NAV.map((item) => {
             const active = pathname.startsWith(item.href);
-            const description = item.tooltipKey
-              ? t(item.tooltipKey)
-              : undefined;
             return (
-              <Tooltip
-                key={item.href}
-                label={t(item.label)}
-                description={description}
-                side="right"
-              >
+              <Tooltip key={item.href} label={t(item.label)} side="right">
                 <Link
                   href={item.href}
                   aria-label={t(item.label)}
@@ -201,7 +206,49 @@ export function SidebarShell({
               </Tooltip>
             );
           })}
-          <SidebarMoreNav items={MORE_FEATURE_NAV} collapsed />
+
+          {/* Learning Tools icon (collapsed — shows all items as a popover on click) */}
+          <Tooltip label={t("Learning Tools")} side="right">
+            <button
+              onClick={() => setLearningToolsOpen((v) => !v)}
+              aria-label={t("Learning Tools")}
+              className={`relative flex h-9 w-9 items-center justify-center rounded-xl transition-all duration-150 ${
+                learningToolsActive || learningToolsOpen
+                  ? "bg-[var(--background)]/80 text-[var(--foreground)] shadow-sm"
+                  : "text-[var(--muted-foreground)] hover:bg-[var(--background)]/50 hover:text-[var(--foreground)]"
+              }`}
+            >
+              {(learningToolsActive || learningToolsOpen) && (
+                <span className="absolute -left-1.5 top-1/2 h-5 w-[3px] -translate-y-1/2 rounded-full bg-[var(--foreground)]/80" />
+              )}
+              <GraduationCap size={18} strokeWidth={learningToolsActive ? 2 : 1.6} />
+            </button>
+          </Tooltip>
+          {learningToolsOpen && (
+            <div className="absolute left-full top-0 z-[200] ml-2 min-w-[168px] overflow-hidden rounded-xl border border-[var(--border)] py-1 shadow-[0_12px_40px_rgba(0,0,0,0.45)] aimtutor-profile-menu">
+              <p className="px-3 py-1.5 text-[10px] font-semibold uppercase tracking-wider text-[var(--muted-foreground)]/70">
+                {t("Learning Tools")}
+              </p>
+              {LEARNING_TOOLS_NAV.map((item) => {
+                const active = pathname.startsWith(item.href);
+                return (
+                  <Link
+                    key={item.href}
+                    href={item.href}
+                    onClick={() => setLearningToolsOpen(false)}
+                    className={`flex items-center gap-2.5 rounded-lg px-3 py-2 text-[13.5px] transition-colors ${
+                      active
+                        ? "bg-[var(--background)]/70 font-medium text-[var(--foreground)]"
+                        : "text-[var(--muted-foreground)] hover:bg-[var(--background)]/50 hover:text-[var(--foreground)]"
+                    }`}
+                  >
+                    <item.icon size={15} strokeWidth={active ? 1.9 : 1.5} />
+                    <span>{t(item.label)}</span>
+                  </Link>
+                );
+              })}
+            </div>
+          )}
         </nav>
 
         <div className="flex-1" />
@@ -242,7 +289,8 @@ export function SidebarShell({
           <span>{t("New Chat")}</span>
         </button>
 
-        <nav className="space-y-px pb-2">
+        <nav className="pb-2">
+          {/* Chat */}
           <Link
             href="/chat"
             className={`flex items-center gap-2.5 rounded-lg px-3 py-2 text-[13.5px] transition-colors ${
@@ -255,27 +303,76 @@ export function SidebarShell({
             <span>{t("Chat")}</span>
           </Link>
 
-          {PRIMARY_FEATURE_NAV.map((item) => {
+          {/* Top-level items (Dashboard) */}
+          {TOP_NAV.map((item) => {
             const active = pathname.startsWith(item.href);
-            const hasBots = item.href === "/agents";
             return (
-              <div key={item.href}>
-                <Link
-                  href={item.href}
-                  className={`flex items-center gap-2.5 rounded-lg px-3 py-2 text-[13.5px] transition-colors ${
-                    active
-                      ? "bg-[var(--background)]/70 font-medium text-[var(--foreground)]"
-                      : "text-[var(--muted-foreground)] hover:bg-[var(--background)]/50 hover:text-[var(--foreground)]"
-                  }`}
-                >
-                  <item.icon size={16} strokeWidth={active ? 1.9 : 1.5} />
-                  <span>{t(item.label)}</span>
-                </Link>
-                {hasBots && <TutorBotRecent />}
-              </div>
+              <Link
+                key={item.href}
+                href={item.href}
+                className={`flex items-center gap-2.5 rounded-lg px-3 py-2 text-[13.5px] transition-colors ${
+                  active
+                    ? "bg-[var(--background)]/70 font-medium text-[var(--foreground)]"
+                    : "text-[var(--muted-foreground)] hover:bg-[var(--background)]/50 hover:text-[var(--foreground)]"
+                }`}
+              >
+                <item.icon size={16} strokeWidth={active ? 1.9 : 1.5} />
+                <span>{t(item.label)}</span>
+              </Link>
             );
           })}
-          <SidebarMoreNav items={MORE_FEATURE_NAV} />
+
+          {/* Collapsible Learning Tools section */}
+          <div className="mt-2">
+            <button
+              type="button"
+              onClick={() => setLearningToolsOpen((v) => !v)}
+              className={`flex w-full items-center gap-2 rounded-lg px-3 py-2 text-[13.5px] transition-colors ${
+                learningToolsActive
+                  ? "text-[var(--foreground)]"
+                  : "text-[var(--muted-foreground)] hover:text-[var(--foreground)]"
+              }`}
+            >
+              <GraduationCap
+                size={16}
+                strokeWidth={learningToolsActive ? 1.9 : 1.5}
+                className={learningToolsActive ? "text-[var(--foreground)]" : ""}
+              />
+              <span className="flex-1 text-left font-medium">{t("Learning Tools")}</span>
+              <ChevronDown
+                size={13}
+                strokeWidth={2}
+                className={`shrink-0 transition-transform duration-200 ${
+                  learningToolsOpen ? "rotate-0" : "-rotate-90"
+                }`}
+              />
+            </button>
+
+            {learningToolsOpen && (
+              <div className="ml-2 mt-0.5 border-l border-[var(--border)]/40 pl-2">
+                {LEARNING_TOOLS_NAV.map((item) => {
+                  const active = pathname.startsWith(item.href);
+                  const hasBots = item.href === "/agents";
+                  return (
+                    <div key={item.href}>
+                      <Link
+                        href={item.href}
+                        className={`flex items-center gap-2.5 rounded-lg px-2.5 py-1.5 text-[13px] transition-colors ${
+                          active
+                            ? "bg-[var(--background)]/70 font-medium text-[var(--foreground)]"
+                            : "text-[var(--muted-foreground)] hover:bg-[var(--background)]/50 hover:text-[var(--foreground)]"
+                        }`}
+                      >
+                        <item.icon size={15} strokeWidth={active ? 1.9 : 1.5} />
+                        <span>{t(item.label)}</span>
+                      </Link>
+                      {hasBots && <TutorBotRecent />}
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+          </div>
         </nav>
       </div>
 
