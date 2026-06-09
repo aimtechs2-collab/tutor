@@ -27,6 +27,7 @@ export default function WorkspaceSidebar() {
   const [loadingSessions, setLoadingSessions] = useState(false)
   const hasLoadedSessionsRef = useRef(getCachedSessions().length > 0)
   const lastRefreshTokenRef = useRef(sidebarRefreshToken)
+  const deletingSessionIdsRef = useRef(new Set<string>())
 
   const refreshSessions = useCallback(async (options?: { force?: boolean }) => {
     if (!hasLoadedSessionsRef.current) {
@@ -107,13 +108,19 @@ export default function WorkspaceSidebar() {
 
   const handleDeleteSession = useCallback(
     async (sessionId: string) => {
+      if (deletingSessionIdsRef.current.has(sessionId)) return
       if (!window.confirm(t('Delete this chat history?'))) return
-      await deleteSession(sessionId)
-      removeCachedSession(sessionId)
-      setSessions(prev => prev.filter(session => session.session_id !== sessionId))
-      if (selectedSessionId === sessionId) {
-        newSession()
-        router.push('/chat')
+      deletingSessionIdsRef.current.add(sessionId)
+      try {
+        await deleteSession(sessionId)
+        removeCachedSession(sessionId)
+        setSessions(prev => prev.filter(session => session.session_id !== sessionId))
+        if (selectedSessionId === sessionId) {
+          newSession()
+          router.push('/chat')
+        }
+      } finally {
+        deletingSessionIdsRef.current.delete(sessionId)
       }
     },
     [newSession, router, selectedSessionId, t]

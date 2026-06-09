@@ -3,6 +3,7 @@
 import { ClerkProvider } from "@clerk/nextjs";
 import type { ReactNode } from "react";
 import { ClerkAuthBridge } from "@/components/auth/ClerkAuthBridge";
+import { ClerkNetworkErrorGuard } from "@/components/auth/ClerkNetworkErrorGuard";
 import { buildClerkAppearance, readAimThemeMode } from "@/components/auth/clerk-appearance";
 
 export function ClerkAuthShell({
@@ -27,6 +28,7 @@ export function ClerkAuthShell({
       appearance={appearance}
     >
       <ClerkAuthBridge />
+      <ClerkNetworkErrorGuard />
       {children}
     </ClerkProvider>
   );

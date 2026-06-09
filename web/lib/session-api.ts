@@ -228,6 +228,12 @@ export async function deleteSession(sessionId: string): Promise<void> {
   const response = await apiFetch(apiUrl(`/api/v1/sessions/${sessionId}`), {
     method: "DELETE",
   });
+  // Idempotent: duplicate deletes (double-click, stale sidebar row) should
+  // still remove the chat from the UI without surfacing a runtime error.
+  if (response.status === 404) {
+    invalidateClientCache("sessions:");
+    return;
+  }
   await expectJson<{ deleted: boolean }>(response);
   invalidateClientCache("sessions:");
 }

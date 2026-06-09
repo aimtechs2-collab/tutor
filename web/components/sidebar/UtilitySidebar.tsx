@@ -28,6 +28,7 @@ export default function UtilitySidebar() {
   const [sessions, setSessions] = useState<SessionSummary[]>(() => getCachedSessions())
   const [loadingSessions, setLoadingSessions] = useState(false)
   const hasLoadedSessionsRef = useRef(getCachedSessions().length > 0)
+  const deletingSessionIdsRef = useRef(new Set<string>())
 
   const refreshSessions = useCallback(async (options?: { force?: boolean }) => {
     if (!hasLoadedSessionsRef.current) {
@@ -80,12 +81,18 @@ export default function UtilitySidebar() {
 
   const handleDeleteSession = useCallback(
     async (sessionId: string) => {
+      if (deletingSessionIdsRef.current.has(sessionId)) return
       if (!window.confirm(t('Delete this chat history?'))) return
-      await deleteSession(sessionId)
-      removeCachedSession(sessionId)
-      setSessions(prev => prev.filter(session => session.session_id !== sessionId))
-      if (activeSessionId === sessionId) {
-        setActiveSessionId(null)
+      deletingSessionIdsRef.current.add(sessionId)
+      try {
+        await deleteSession(sessionId)
+        removeCachedSession(sessionId)
+        setSessions(prev => prev.filter(session => session.session_id !== sessionId))
+        if (activeSessionId === sessionId) {
+          setActiveSessionId(null)
+        }
+      } finally {
+        deletingSessionIdsRef.current.delete(sessionId)
       }
     },
     [activeSessionId, setActiveSessionId, t]

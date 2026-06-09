@@ -135,6 +135,11 @@ async def delete_session(session_id: str):
     store = get_session_store()
     deleted = await store.delete_session(session_id)
     if not deleted:
+        # Idempotent delete — treat already-removed sessions as success so
+        # duplicate DELETE requests (stale sidebar rows, double-clicks) do
+        # not surface 404 errors to the client.
+        if await store.get_session(session_id) is None:
+            return {"deleted": True, "session_id": session_id, "already_deleted": True}
         raise HTTPException(status_code=404, detail="Session not found")
     try:
         await get_attachment_store().delete_session(session_id)

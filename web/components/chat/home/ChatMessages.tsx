@@ -155,8 +155,23 @@ const AssistantMessage = memo(function AssistantMessage({
         },
   ) => void;
 }) {
+  const { t } = useTranslation();
   const events = useMemo(() => msg.events ?? [], [msg.events]);
   const hasVisibleAssistantBody = hasVisibleMarkdownContent(msg.content);
+  const terminalError = useMemo(() => {
+    if (isStreaming) return null;
+    const errEvent = [...events]
+      .reverse()
+      .find((event) => event.type === "error" && event.content.trim());
+    if (!errEvent) return null;
+    const raw = errEvent.content.trim();
+    if (/invalid_api_key|incorrect api key/i.test(raw)) {
+      return t(
+        "The chat model API key is invalid. Open Settings → LLM, update your key, then try again.",
+      );
+    }
+    return raw;
+  }, [events, isStreaming, t]);
   const resultEvent = useMemo(
     () => msg.events?.find((event) => event.type === "result") ?? null,
     [msg.events],
@@ -328,6 +343,14 @@ const AssistantMessage = memo(function AssistantMessage({
       ) : (
         <AssistantResponse content={msg.content} />
       )}
+      {terminalError && !hasVisibleAssistantBody ? (
+        <div
+          role="alert"
+          className="rounded-lg border border-[var(--destructive)]/30 bg-[var(--destructive)]/10 px-3 py-2.5 text-[14px] leading-snug text-[var(--destructive)]"
+        >
+          {terminalError}
+        </div>
+      ) : null}
       {isStreaming && !hasVisibleAssistantBody ? <ResponseWarmup /> : null}
       {/* Step-based capabilities (e.g. Solve) stream their answer in
           stages and pause to "think" between steps. Once a body is

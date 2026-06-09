@@ -48,7 +48,7 @@ const TOP_NAV: NavEntry[] = [
 const LEARNING_TOOLS_NAV: NavEntry[] = [
   {
     href: "/agents",
-    label: "TutorBot",
+    label: "customTutors",
     icon: Bot,
     tooltipKey: "TutorBot tooltip",
   },
