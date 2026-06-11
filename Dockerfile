@@ -451,3 +451,11 @@ RUN sed -i 's/\r$//' /etc/supervisor/conf.d/aimtutor.conf
 
 # Development ports
 EXPOSE 8001 3782
+
+# ============================================
+# Stage 5: Render / API-only deploy target
+# ============================================
+# Hosts that build the last Dockerfile stage (Render Blueprint) should land here
+# instead of the development image above. Runtime command is overridden in
+# render.yaml to run FastAPI only (no bundled Next.js frontend).
+FROM production AS render

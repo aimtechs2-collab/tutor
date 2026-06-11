@@ -1,0 +1,45 @@
+# AIMTutor — Render Blueprint (API backend only)
+# https://render.com/docs/blueprint-spec
+#
+# Deploy: Render Dashboard → New → Blueprint → connect aimtechs2-collab/tutor
+# Frontend stays on Vercel (Root Directory: web). Point NEXT_PUBLIC_API_BASE
+# at this service's URL after the first deploy.
+
+envVarGroups:
+  - name: aimtutor-secrets
+    envVars:
+      - key: CLERK_SECRET_KEY
+        sync: false
+      - key: CLERK_WEBHOOK_SECRET
+        sync: false
+      - key: OPENAI_API_KEY
+        sync: false
+      - key: GEMINI_API_KEY
+        sync: false
+      - key: CORS_ORIGINS
+        sync: false
+
+services:
+  - type: web
+    name: aimtutor-api
+    runtime: docker
+    region: singapore
+    plan: standard
+    branch: main
+    dockerfilePath: ./Dockerfile
+    dockerCommand: python -m uvicorn aimtutor.api.main:app --host 0.0.0.0 --port $PORT
+    healthCheckPath: /
+    disk:
+      name: aimtutor-data
+      mountPath: /app/data
+      sizeGB: 10
+    envVars:
+      - fromGroup: aimtutor-secrets
+      - key: AUTH_ENABLED
+        value: "true"
+      - key: AUTH_PROVIDER
+        value: clerk
+      - key: GEMINI_LIVE_MODEL
+        value: gemini-3.1-flash-live-preview
+      - key: PYTHONUNBUFFERED
+        value: "1"
