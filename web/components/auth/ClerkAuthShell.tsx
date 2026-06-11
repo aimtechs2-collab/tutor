@@ -22,8 +22,8 @@ export function ClerkAuthShell({
       publishableKey={publishableKey}
       signInUrl="/sign-in"
       signUpUrl="/sign-up"
-      afterSignInUrl="/chat"
-      afterSignUpUrl="/chat"
+      signInFallbackRedirectUrl="/chat"
+      signUpFallbackRedirectUrl="/chat"
       appearance={appearance}
     >
       <ClerkAuthBridge />

@@ -19,6 +19,22 @@ const CLERK_ENABLED =
   process.env.NEXT_PUBLIC_AUTH_PROVIDER === "clerk" &&
   Boolean(process.env.NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY);
 
+type ClerkUser = {
+  firstName?: string | null;
+  primaryEmailAddress?: { emailAddress?: string | null } | null;
+  publicMetadata?: Record<string, unknown>;
+};
+
+declare global {
+  interface Window {
+    Clerk?: {
+      load?: () => Promise<void>;
+      signOut?: () => Promise<void>;
+      user?: ClerkUser | null;
+    };
+  }
+}
+
 interface UserNavProps {
   collapsed?: boolean;
 }
@@ -224,11 +240,7 @@ function ProfileMenu({
 }
 
 function ClerkUserNav({ collapsed = false }: UserNavProps) {
-  const [user, setUser] = useState<{
-    firstName?: string | null;
-    primaryEmailAddress?: { emailAddress?: string | null } | null;
-    publicMetadata?: Record<string, unknown>;
-  } | null>(null);
+  const [user, setUser] = useState<ClerkUser | null>(null);
 
   useEffect(() => {
     let cancelled = false;
@@ -238,7 +250,7 @@ function ClerkUserNav({ collapsed = false }: UserNavProps) {
       }
       await window.Clerk?.load?.();
       if (!cancelled) {
-        setUser((window.Clerk as { user?: typeof user })?.user || null);
+        setUser(window.Clerk?.user ?? null);
       }
     };
     void load();
@@ -258,7 +270,7 @@ function ClerkUserNav({ collapsed = false }: UserNavProps) {
       email={email || undefined}
       isAdmin={isAdmin}
       onSignOut={async () => {
-        await (window.Clerk as { signOut?: () => Promise<void> })?.signOut?.();
+        await window.Clerk?.signOut?.();
         window.location.href = "/sign-in";
       }}
     />

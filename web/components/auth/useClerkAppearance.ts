@@ -1,14 +1,13 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import type { Appearance } from "@clerk/types";
 import {
   buildClerkAppearance,
   readAimThemeMode,
   type AimThemeMode,
 } from "@/components/auth/clerk-appearance";
 
-export function useClerkAppearance(): Appearance {
+export function useClerkAppearance() {
   const [mode, setMode] = useState<AimThemeMode>("light");
 
   useEffect(() => {

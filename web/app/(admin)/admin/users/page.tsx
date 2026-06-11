@@ -1,6 +1,6 @@
 "use client";
 
-import { Fragment, useEffect, useState, useCallback } from "react";
+import { Fragment, useEffect, useState, useCallback, useRef } from "react";
 import { useRouter } from "next/navigation";
 import { fetchAuthStatus } from "@/lib/auth";
 import {
@@ -306,6 +306,14 @@ export default function AdminUsersPage() {
                         </td>
                         <td className="px-5 py-3.5">
                           <div className="flex items-center justify-end gap-1.5">
+                            <Link
+                              href={`/admin/users/${user.id}`}
+                              className="rounded p-1 opacity-60 hover:opacity-100 transition-opacity"
+                              title="View details"
+                              style={{ color: "var(--foreground)" }}
+                            >
+                              👁
+                            </Link>
                             {canManageAssignments && (
                               <button
                                 onClick={() =>
@@ -318,15 +326,7 @@ export default function AdminUsersPage() {
                                          hover:bg-[var(--background)] hover:text-[var(--foreground)]
                                          transition-colors"
                               >
-                                <Link
-                      href={`/admin/users/${u.id}`}
-                      className="rounded p-1 opacity-60 hover:opacity-100 transition-opacity"
-                      title="View details"
-                      style={{ color: "var(--foreground)" }}
-                    >
-                      👁
-                    </Link>
-                    <SlidersHorizontal size={15} />
+                                <SlidersHorizontal size={15} />
                               </button>
                             )}
                             <button

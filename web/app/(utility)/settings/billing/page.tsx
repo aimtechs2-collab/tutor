@@ -207,6 +207,7 @@ export default function BillingSettingsPage() {
                           </span>
                         </div>
                         <QuotaBar
+                          label={label}
                           used={entry.used}
                           limit={entry.limit}
                           unlimited={entry.unlimited}

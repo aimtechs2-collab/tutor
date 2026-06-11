@@ -58,7 +58,7 @@ export default function VoiceSettingsPage() {
       >
         {/* Status */}
         <SettingRow
-          label="Status"
+          title="Status"
           description={
             config === null
               ? "Loading…"
@@ -66,45 +66,47 @@ export default function VoiceSettingsPage() {
               ? "Gemini Live is configured and ready."
               : "GEMINI_API_KEY is not set. Add it to your server environment and restart."
           }
-        >
-          {config === null ? (
-            <Loader2 size={16} className="animate-spin opacity-40" />
-          ) : config.enabled ? (
-            <div className="flex items-center gap-1.5 text-xs" style={{ color: "#22c55e" }}>
-              <CheckCircle size={14} />
-              Enabled
-            </div>
-          ) : (
-            <div className="flex items-center gap-1.5 text-xs" style={{ color: "#ef4444" }}>
-              <XCircle size={14} />
-              Not configured
-            </div>
-          )}
-        </SettingRow>
+          control={
+            config === null ? (
+              <Loader2 size={16} className="animate-spin opacity-40" />
+            ) : config.enabled ? (
+              <div className="flex items-center gap-1.5 text-xs" style={{ color: "#22c55e" }}>
+                <CheckCircle size={14} />
+                Enabled
+              </div>
+            ) : (
+              <div className="flex items-center gap-1.5 text-xs" style={{ color: "#ef4444" }}>
+                <XCircle size={14} />
+                Not configured
+              </div>
+            )
+          }
+        />
 
         {/* Test connection */}
         {config?.enabled && (
           <SettingRow
-            label="Test connection"
+            title="Test connection"
             description="Request a token to verify the API key is working."
-          >
-            <div className="flex items-center gap-3">
-              {testResult === "ok" && (
-                <span className="text-xs" style={{ color: "#22c55e" }}>✓ API key works</span>
-              )}
-              {testResult === "fail" && (
-                <span className="text-xs" style={{ color: "#ef4444" }}>✗ Token request failed</span>
-              )}
-              <button
-                onClick={handleTest}
-                disabled={testing}
-                className="rounded-lg px-3 py-1.5 text-xs font-medium disabled:opacity-50"
-                style={{ background: "var(--primary)", color: "var(--primary-foreground)" }}
-              >
-                {testing ? "Testing…" : "Test"}
-              </button>
-            </div>
-          </SettingRow>
+            control={
+              <div className="flex items-center gap-3">
+                {testResult === "ok" && (
+                  <span className="text-xs" style={{ color: "#22c55e" }}>✓ API key works</span>
+                )}
+                {testResult === "fail" && (
+                  <span className="text-xs" style={{ color: "#ef4444" }}>✗ Token request failed</span>
+                )}
+                <button
+                  onClick={handleTest}
+                  disabled={testing}
+                  className="rounded-lg px-3 py-1.5 text-xs font-medium disabled:opacity-50"
+                  style={{ background: "var(--primary)", color: "var(--primary-foreground)" }}
+                >
+                  {testing ? "Testing…" : "Test"}
+                </button>
+              </div>
+            }
+          />
         )}
       </SettingSection>
 
@@ -116,16 +118,17 @@ export default function VoiceSettingsPage() {
           {config.models.map((m) => (
             <SettingRow
               key={m.id}
-              label={m.display_name}
+              title={m.display_name}
               description={`${m.id}${m.affective_dialog ? " · Supports affective dialog" : ""}`}
-            >
-              <span
-                className="rounded-full px-2 py-0.5 text-xs"
-                style={{ background: "rgba(34,197,94,0.1)", color: "#22c55e" }}
-              >
-                Available
-              </span>
-            </SettingRow>
+              control={
+                <span
+                  className="rounded-full px-2 py-0.5 text-xs"
+                  style={{ background: "rgba(34,197,94,0.1)", color: "#22c55e" }}
+                >
+                  Available
+                </span>
+              }
+            />
           ))}
         </SettingSection>
       )}

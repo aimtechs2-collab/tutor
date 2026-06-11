@@ -1,5 +1,4 @@
 import { dark } from "@clerk/themes";
-import type { Appearance } from "@clerk/types";
 
 export type AimThemeMode = "light" | "dark" | "snow" | "glass";
 
@@ -67,7 +66,7 @@ export function readAimThemeMode(): AimThemeMode {
   return "light";
 }
 
-export function buildClerkAppearance(mode: AimThemeMode): Appearance {
+export function buildClerkAppearance(mode: AimThemeMode) {
   const p = PALETTES[mode];
   const isDark = mode === "dark" || mode === "glass";
 
